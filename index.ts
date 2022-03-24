@@ -8,6 +8,9 @@ import fetch from "cross-fetch";
 import fetchRetry from "fetch-retry";
 
 
+const PROMISE_BATCH_SIZE = 300;
+
+
 const TIMING = {
     fetchBlocks: {
         start: 0,
@@ -24,7 +27,7 @@ const customFetch = fetchRetry(fetch, {
 
 
 
-const START_BLOCK = 26208359 - 100000;//604800/20;
+const START_BLOCK = 26208359 - 604800/2;
 const END_BLOCK = 26208359;
 
 const APIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
@@ -52,7 +55,8 @@ const range = (start: number, end: number) => Array.from(Array(end - start + 1).
 
 async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100) {
     let results: any[] = [];
-    const promises: any[] = [];
+    let promises: any[] = [];
+    let finishedPromises: any[] = [];
 
     let currentPage = 1;
     const numPages = Math.ceil((end - start + 1)/pageSize);
@@ -71,11 +75,16 @@ async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:
             currentPage++;
             resolve(y);
         }));
-    }
 
-    const allResults = await Promise.all(promises);
+        if (promises.length === PROMISE_BATCH_SIZE) {
+            finishedPromises = finishedPromises.concat(await Promise.all(promises));
+            promises = [];
+        }
+    }
     
-    allResults.forEach(r => {
+    finishedPromises = finishedPromises.concat(await Promise.all(promises));
+    
+    finishedPromises.forEach(r => {
         results = results.concat(r.data.blocks);
     });
 
