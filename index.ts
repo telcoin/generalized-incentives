@@ -16,13 +16,22 @@ const PROMISE_BATCH_SIZE = 300;
 
 
 const TIMING = {
+    scriptStart: 0,
     fetchBlocks: {
         start: 0,
         end: 0
     },
     fetchSwaps: {},
     fetchJoinExits: {},
-    fetchLiquidity: {}
+    fetchLiquidity: {},
+    fillingData: {
+        last: 0,
+        total: 0
+    },
+    casting: {
+        start: 0,
+        end: 0
+    }
 };
 
 const customFetch = fetchRetry(fetch, {
@@ -31,7 +40,7 @@ const customFetch = fetchRetry(fetch, {
 
 
 
-const START_BLOCK = 26208359 - 604800/2;
+const START_BLOCK = 26208359 - 604800/20;
 const END_BLOCK = 26208359;
 
 const APIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
@@ -371,6 +380,7 @@ async function calculateS(poolTokenAddress: string) {
 
         if (blockNo - START_BLOCK > nCols) {
             // we need to fill in columns with repeated data
+            TIMING.fillingData.last = Date.now();
             let numberToFill = blockNo - START_BLOCK - nCols;
 
             // iterate over rows
@@ -378,14 +388,17 @@ async function calculateS(poolTokenAddress: string) {
                 // fill in extra data for each column until we hit current block
                 _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
             }
+            TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
         }
 
         assert(_S.length === addresses.length || _S.length === addresses.length - 1);
 
         // if there was a new address added then we add a new row on the bottom of _S with zeros
         if (addresses.length - 1 === _S.length) {
+            TIMING.fillingData.last = Date.now();
             const numberToFill = blockNo - START_BLOCK;
             _S.push(Array(numberToFill).fill(ethers.BigNumber.from(0)));
+            TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
         }
 
         assert(_S.length === addresses.length);
@@ -405,6 +418,7 @@ async function calculateS(poolTokenAddress: string) {
     const nCols = _S[0].length;
 
     if (END_BLOCK - START_BLOCK > nCols) {
+        TIMING.fillingData.last = Date.now();
         // we need to fill in columns with repeated data
         let numberToFill = END_BLOCK - START_BLOCK - nCols;
 
@@ -413,15 +427,18 @@ async function calculateS(poolTokenAddress: string) {
             // fill in extra data for each column until we hit current block
             _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
         }
+        TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
     }
 
     console.log('casting to js number')
+    TIMING.casting.start = Date.now();
     for (let i = 0; i < _S.length; i++) {
         assert(_S[0].length === _S[i].length);
         for (let j = 0; j < _S[0].length; j++) {
             _S[i][j] = _S[i][j] - 0;
         }
     }
+    TIMING.casting.end = Date.now();
 
     return _S;
 }
@@ -430,7 +447,7 @@ async function calculateS(poolTokenAddress: string) {
     // TODO: maybe use BigNumber for _V calculation - not sure if floating point error will become problematic
     // TODO: use the graph or blockchain-etl for erc20 transfers - the 10K transfer limit could be a future issue if this is used long-term
 
-    const SCRIPT_START_TS = Date.now();
+    TIMING.scriptStart = Date.now();
 
     // create graphql clients
     const balancerClient = new ApolloClient({
@@ -455,10 +472,12 @@ async function calculateS(poolTokenAddress: string) {
 
     // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
     const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
+    
 
-    console.log(_Yp);
+    console.log('filling data took', TIMING.fillingData.total);
+    console.log('casting took', TIMING.casting.end - TIMING.casting.start);
 
 
 
-    console.log(`finished in ${Math.floor((Date.now() - SCRIPT_START_TS)/1000)} seconds`);
+    console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
 })();
