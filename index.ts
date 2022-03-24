@@ -1,5 +1,3 @@
-const SCRIPT_START_TS = Date.now();
-
 import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject } from '@apollo/client'
 import { BatchHttpLink } from "@apollo/client/link/batch-http";
 import { assert } from 'chai';
@@ -27,7 +25,7 @@ const customFetch = fetchRetry(fetch, {
 
 
 
-const START_BLOCK = 26208359 - 604800/2;
+const START_BLOCK = 26208359 - 604800/20;
 const END_BLOCK = 26208359;
 
 const APIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
@@ -243,10 +241,10 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     return Promise.all(promises);
 }
 
+/////////////////////////////////////////////////////////////
 
 
-(async () => {
-
+async function calculateV(poolId: string): Promise<number[]> {
     /*
     
     PLAN:
@@ -260,8 +258,6 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     
     */
     
-    const POOL_ID = "0x03cd191f589d12b0582a99808cf19851e468e6b500010000000000000000000a";
-
     const balancerClient = new ApolloClient({
         link: new HttpLink({ uri: APIURL, fetch: customFetch }),
         cache: new InMemoryCache()
@@ -288,7 +284,7 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     // get swaps
     const swapTimestamps = await getSwapsTimestamps2(
         balancerClient, 
-        POOL_ID, 
+        poolId, 
         blockToTimestamp[START_BLOCK], 
         blockToTimestamp[END_BLOCK]
     );
@@ -296,7 +292,7 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     // get joins/exits
     const joinExitTimestamps = await getJoinExitTimestamps2(
         balancerClient, 
-        POOL_ID, 
+        poolId, 
         blockToTimestamp[START_BLOCK], 
         blockToTimestamp[END_BLOCK]
     );
@@ -318,7 +314,7 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
 
     
     // get liquidity data for all blocks with interactions
-    const liquidityData = await getLiquidityForListOfBlocks(balancerClient, POOL_ID, blocksOfInteraction);
+    const liquidityData = await getLiquidityForListOfBlocks(balancerClient, poolId, blocksOfInteraction);
     assert(liquidityData.length === blocksOfInteraction.length);
 
     liquidityData.sort((a, b) => {
@@ -333,7 +329,7 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
     let _V: number[] = [];
 
-    const initialLiquidity = await getLiquidityAtBlock(balancerClient, POOL_ID, START_BLOCK);
+    const initialLiquidity = await getLiquidityAtBlock(balancerClient, poolId, START_BLOCK);
     _V = Array(liquidityData[0].block - START_BLOCK).fill(initialLiquidity.totalLiquidity / initialLiquidity.totalShares);
 
     for (let i = 0; i < liquidityData.length - 1; i++) {
@@ -348,14 +344,15 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
     _V = _V.concat(Array(END_BLOCK - liqf.block).fill(liqf.totalLiquidity / liqf.totalShares));
 
     assert(_V.length === END_BLOCK - START_BLOCK);
-    
 
-    
+    return _V;
+}
 
+(async () => {
+    const SCRIPT_START_TS = Date.now();
 
-
-
-
+    const POOL_ID = "0x03cd191f589d12b0582a99808cf19851e468e6b500010000000000000000000a";
+    const _V = await calculateV(POOL_ID);
 
     console.log(`finished in ${Math.floor((Date.now() - SCRIPT_START_TS)/1000)} seconds`);
 })();
