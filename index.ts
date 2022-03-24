@@ -1,10 +1,14 @@
+import * as dotenv from 'dotenv';
+
 import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject } from '@apollo/client'
 import { BatchHttpLink } from "@apollo/client/link/batch-http";
 import { assert } from 'chai';
 
 import fetch from "cross-fetch";
 import fetchRetry from "fetch-retry";
+import { ethers } from 'ethers';
 
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const PROMISE_BATCH_SIZE = 300;
 
@@ -25,7 +29,7 @@ const customFetch = fetchRetry(fetch, {
 
 
 
-const START_BLOCK = 26208359 - 604800/20;
+const START_BLOCK = 26208359 - 604800/2;
 const END_BLOCK = 26208359;
 
 const APIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
@@ -157,7 +161,7 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
 /////////////////////////////////////////////////////////////
 
 
-async function calculateV(poolId: string): Promise<number[]> {
+async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, blocksClient: ApolloClient<NormalizedCacheObject>, poolId: string): Promise<number[]> {
     /*
     
     PLAN:
@@ -170,18 +174,6 @@ async function calculateV(poolId: string): Promise<number[]> {
     
     
     */
-    
-    const balancerClient = new ApolloClient({
-        link: new HttpLink({ uri: APIURL, fetch: customFetch }),
-        cache: new InMemoryCache()
-    });
-
-
-    // get block <-> timestamp
-    const blocksClient = new ApolloClient({
-        link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
-        cache: new InMemoryCache()
-    });
 
     const timestampToBlock: {[key: string]: string} = {}
     const blockToTimestamp: {[key: string]: string} = {}
@@ -262,15 +254,169 @@ async function calculateV(poolId: string): Promise<number[]> {
     return _V;
 }
 
-async function calculateS(poolId: string) {
+async function getERC20TransferEvents(
+    erc20Address: string,
+    startBlock = 0,
+    endBlock = 9999999999999
+): Promise<{[key: string]: string}[]> {
+    const URL = `https://api.polygonscan.com/api?module=account&action=tokentx&contractaddress=${erc20Address}&startblock=${startBlock}&endblock=${endBlock}&sort=asc&apikey=${process.env.POLYGONSCAN_API_KEY}`;
 
+    const data = await fetch(URL).then((x) => x.json());
+
+    if (data.result.length === 10000) {
+        throw new Error("hit 10k erc20 transfer limit");
+    }
+
+    return data.result;
+}; 
+
+async function calculateS(poolTokenAddress: string) {
+    /*
+    PLAN
+
+    fetch ALL erc20 transfers of LP token up until END_BLOCK
+
+    recreate balances of all users at START_BLOCK by iterating over transfers
+        - pause once START_BLOCK is reached
+
+    use above balances to create first column of _S
+
+    continue iteration over transfers
+        - fill in columns between last filled column and current block's column with values of last filled in column (because state is unchanged during these blocks)
+        - set column corresponding to current transfer block to current balances state
+
+    return
+
+    */
+    const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
+
+    const addresses: string[] = []; // this array also keeps track of which row is which
+    const balances: {[key: string]: ethers.BigNumber} = {};
+
+    function updateBalances(tx: {[key: string]: string}) {
+        const from = tx.from.toLowerCase();
+        const to = tx.to.toLowerCase();
+        const value = ethers.BigNumber.from(tx.value);
+        
+        if (from !== ZERO_ADDRESS) {
+            balances[from] = balances[from] || ethers.BigNumber.from(0);
+            balances[from] = balances[from].sub(value);
+            if (addresses.indexOf(from) === -1) {
+                addresses.push(from);
+            }
+        }
+        
+        if (to !== ZERO_ADDRESS) {
+            balances[to] = balances[to] || ethers.BigNumber.from(0);   
+            balances[to] = balances[to].add(value);
+            if (addresses.indexOf(to) === -1) {
+                addresses.push(to);
+            }
+        }
+    }
+    
+    let i = 0;
+    while (parseInt(transfers[i].blockNumber) <= START_BLOCK) {
+        const tx = transfers[i];
+        updateBalances(tx);
+        i++;
+    }
+
+    const _S: ethers.BigNumber[][] = Array(addresses.length).fill([]);
+
+    // create initial column
+    for (let j = 0; j < addresses.length; j++) {
+        _S[j] = [balances[addresses[j]]];
+    }
+
+    while (i < transfers.length && parseInt(transfers[i].blockNumber) < END_BLOCK) {
+        const tx = transfers[i];
+        const from = tx.from.toLowerCase();
+        const to = tx.to.toLowerCase();
+        const blockNo = parseInt(tx.blockNumber);
+        
+        updateBalances(tx);
+
+        const nCols = _S[0].length;
+
+        if (blockNo - START_BLOCK > nCols) {
+            // we need to fill in columns with repeated data
+            let numberToFill = blockNo - START_BLOCK - nCols;
+
+            // iterate over rows
+            for (let _row = 0; _row < _S.length; _row++) {
+                // fill in extra data for each column until we hit current block
+                _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
+            }
+        }
+
+        assert(_S.length === addresses.length || _S.length === addresses.length - 1);
+
+        // if there was a new address added then we add a new row on the bottom of _S with zeros
+        if (addresses.length - 1 === _S.length) {
+            const numberToFill = blockNo - START_BLOCK;
+            _S.push(Array(numberToFill).fill(ethers.BigNumber.from(0)));
+        }
+
+        assert(_S.length === addresses.length);
+        // finally, add a new column with current balances
+
+        for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
+            _S[iAddr].push(balances[addresses[iAddr]]);
+        }
+
+        // assert that the new column is legit
+
+        console.log(i/transfers.length);
+
+        i++;
+    }
+
+    const nCols = _S[0].length;
+
+    if (END_BLOCK - START_BLOCK > nCols) {
+        // we need to fill in columns with repeated data
+        let numberToFill = END_BLOCK - START_BLOCK - nCols;
+
+        // iterate over rows
+        for (let _row = 0; _row < _S.length; _row++) {
+            // fill in extra data for each column until we hit current block
+            _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
+        }
+    }
+
+    return _S;
 }
 
 (async () => {
+    // TODO: maybe use BigNumber for _V calculation - not sure if floating point error will become problematic
+    // TODO: use the graph or blockchain-etl for erc20 transfers - the 10K transfer limit could be a future issue if this is used long-term
+
     const SCRIPT_START_TS = Date.now();
 
+    // create graphql clients
+    const balancerClient = new ApolloClient({
+        link: new HttpLink({ uri: APIURL, fetch: customFetch }),
+        cache: new InMemoryCache()
+    });
+
+    const blocksClient = new ApolloClient({
+        link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
+        cache: new InMemoryCache()
+    });
+
     const POOL_ID = "0x03cd191f589d12b0582a99808cf19851e468e6b500010000000000000000000a";
-    const _V = await calculateV(POOL_ID);
+    const POOL_ADDRESS = "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813";
+
+    // calculate _V
+    // const _V = await calculateV(balancerClient, blocksClient, POOL_ID);
+
+    // calculate _S
+    const _S = await calculateS(POOL_ADDRESS);
+
+    console.log(_S.length, _S[0].length, END_BLOCK - START_BLOCK);
+
+    // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
 
     console.log(`finished in ${Math.floor((Date.now() - SCRIPT_START_TS)/1000)} seconds`);
 })();
