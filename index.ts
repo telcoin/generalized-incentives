@@ -321,7 +321,7 @@ async function calculateS(poolTokenAddress: string) {
     const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
 
     const addresses: string[] = []; // this array also keeps track of which row is which
-    const balances: {[key: string]: ethers.BigNumber} = {};
+    const balances: {[key: string]: any} = {};
 
     function updateBalances(tx: {[key: string]: string}) {
         const from = tx.from.toLowerCase();
@@ -352,7 +352,7 @@ async function calculateS(poolTokenAddress: string) {
         i++;
     }
 
-    const _S: ethers.BigNumber[][] = Array(addresses.length).fill([]);
+    const _S: any[][] = Array(addresses.length).fill([]);
 
     // create initial column
     for (let j = 0; j < addresses.length; j++) {
@@ -415,6 +415,14 @@ async function calculateS(poolTokenAddress: string) {
         }
     }
 
+    console.log('casting to js number')
+    for (let i = 0; i < _S.length; i++) {
+        assert(_S[0].length === _S[i].length);
+        for (let j = 0; j < _S[0].length; j++) {
+            _S[i][j] = _S[i][j] - 0;
+        }
+    }
+
     return _S;
 }
 
@@ -446,7 +454,9 @@ async function calculateS(poolTokenAddress: string) {
     assert(_S[0].length === END_BLOCK - START_BLOCK);
 
     // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
-    // const _Yp = 
+    const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
+
+    console.log(_Yp);
 
 
 
