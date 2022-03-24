@@ -8,6 +8,8 @@ import fetch from "cross-fetch";
 import fetchRetry from "fetch-retry";
 import { ethers } from 'ethers';
 
+import * as math from 'mathjs';
+
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const PROMISE_BATCH_SIZE = 300;
@@ -134,10 +136,33 @@ async function getLiquidityAtBlock(client: ApolloClient<NormalizedCacheObject>, 
 async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheObject>, poolId: string, blocks: number[]) {
     let currentPage = 1;
 
-    const promises: any[] = blocks.map(b => {
-        return new Promise(async (resolve, reject) => {
+    // const promises: any[] = blocks.map(b => {
+    //     return new Promise(async (resolve, reject) => {
+    //         const q = `{
+    //             pools(where: {id: "${poolId}"}, block: { number: ${b} }) {
+    //                 totalLiquidity,
+    //                 totalShares
+    //             }
+    //         }`;
+
+    //         const y = (await client.query({query: gql(q)})).data.pools[0];
+            
+    //         const yCopy = JSON.parse(JSON.stringify(y));
+    //         yCopy.block = b;
+
+    //         console.log('liquidity progress:', currentPage / blocks.length);
+    //         currentPage++;
+            
+    //         resolve(yCopy);
+    //     })
+    // });
+
+    let promises2: any[] = [];
+    let awaitedPromises: any[] = [];
+    for (let i = 0; i < blocks.length; i++) {
+        promises2.push(new Promise(async (resolve, reject) => {
             const q = `{
-                pools(where: {id: "${poolId}"}, block: { number: ${b} }) {
+                pools(where: {id: "${poolId}"}, block: { number: ${blocks[i]} }) {
                     totalLiquidity,
                     totalShares
                 }
@@ -146,16 +171,21 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
             const y = (await client.query({query: gql(q)})).data.pools[0];
             
             const yCopy = JSON.parse(JSON.stringify(y));
-            yCopy.block = b;
+            yCopy.block = blocks[i];
 
             console.log('liquidity progress:', currentPage / blocks.length);
             currentPage++;
             
             resolve(yCopy);
-        })
-    });
+        }));
 
-    return Promise.all(promises);
+        if (promises2.length === PROMISE_BATCH_SIZE) {
+            awaitedPromises = awaitedPromises.concat(await Promise.all(promises2));
+            promises2 = [];
+        }
+    }
+
+    return awaitedPromises.concat(await Promise.all(promises2));
 }
 
 /////////////////////////////////////////////////////////////
@@ -405,18 +435,20 @@ async function calculateS(poolTokenAddress: string) {
         cache: new InMemoryCache()
     });
 
-    const POOL_ID = "0x03cd191f589d12b0582a99808cf19851e468e6b500010000000000000000000a";
+    const POOL_ID = "0xdb1db6e248d7bb4175f6e5a382d0a03fe3dcc813000100000000000000000035";
     const POOL_ADDRESS = "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813";
 
     // calculate _V
-    // const _V = await calculateV(balancerClient, blocksClient, POOL_ID);
+    const _V = await calculateV(balancerClient, blocksClient, POOL_ID);
 
     // calculate _S
     const _S = await calculateS(POOL_ADDRESS);
-
-    console.log(_S.length, _S[0].length, END_BLOCK - START_BLOCK);
+    assert(_S[0].length === END_BLOCK - START_BLOCK);
 
     // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
+    // const _Yp = 
+
+
 
     console.log(`finished in ${Math.floor((Date.now() - SCRIPT_START_TS)/1000)} seconds`);
 })();
