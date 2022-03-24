@@ -34,23 +34,6 @@ const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethere
 
 const range = (start: number, end: number) => Array.from(Array(end - start + 1).keys()).map(x => x + start);
 
-
-// async function getBlocks(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100): Promise<{[key: string]: string}[]> {
-//     let results: any[] = [];
-//     for (let a = start; a < end; a += pageSize) {
-//         const q = `{
-//             blocks(where: {number_gte: ${a}, number_lt: ${a+pageSize}}, orderBy: number, orderDirection: asc) {
-//                 number
-//                 timestamp
-//             }
-//         }`;
-//         const d = await client.query({query: gql(q)});
-//         console.log('block progress:', (a - start)/(end - start));
-//         results = results.concat(d.data.blocks);
-//     }
-//     return results;
-// }
-
 async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100) {
     let results: any[] = [];
     let promises: any[] = [];
@@ -89,32 +72,8 @@ async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:
     return results;
 }
 
-// async function getSwapsTimestamps(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-//     let results: number[] = [];
-//     let page = 0;
-//     console.log(minTimestamp, maxTimestamp);
-//     while (true) {
-//         const q = `{
-//             swaps(where: {poolId: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}}, first: ${pageSize}, orderBy: timestamp, orderDirection: asc, skip: ${page*pageSize}) {
-//                 timestamp,
-//                 id
-//             }
-//         }`;
-        
-//         const d = await client.query({query: gql(q)});
-        
-//         console.log('swap page:', page);
-//         page++;
-        
-//         results = results.concat(d.data.swaps.map((x: any) => x.timestamp));
 
-//         if (d.data.swaps.length < pageSize) {
-//             return results;
-//         }
-//     }
-// }
-
-async function getSwapsTimestamps2(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
+async function getSwapsOrJoinsTs(type: string, client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number): Promise<number[]> {
     let results: number[] = [];
     let page = 0;
     
@@ -122,7 +81,7 @@ async function getSwapsTimestamps2(client: ApolloClient<NormalizedCacheObject>, 
 
     while (true) {
         const q = `{
-            swaps(where: {poolId: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
+            ${type}(where: {pool${type === 'swaps' ? 'Id' : ''}: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
                 timestamp,
                 id
             }
@@ -131,72 +90,26 @@ async function getSwapsTimestamps2(client: ApolloClient<NormalizedCacheObject>, 
         const d = await client.query({query: gql(q)});
         
         
-        console.log('swap page:', page);
+        console.log(`${type} page:`, page);
         page++;
         
-        results = results.concat(d.data.swaps.map((x: any) => x.timestamp));
+        results = results.concat(d.data[type].map((x: any) => x.timestamp));
         
-        if (d.data.swaps.length < pageSize) {
+        if (d.data[type].length < pageSize) {
             results.sort();
             return results;
         }
 
-        lastId = d.data.swaps[d.data.swaps.length - 1].id;
+        lastId = d.data[type][d.data[type].length - 1].id;
     }
 }
 
-// async function getJoinExitTimestamps(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-//     let results: number[] = [];
-//     let page = 0;
-
-//     while (true) {
-//         const q = `{
-//             joinExits(where: {pool: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}}, first: ${pageSize}, orderBy: timestamp, orderDirection: asc, skip: ${page*pageSize}) {
-//                 timestamp
-//             }
-//         }`;
-        
-//         const d = await client.query({query: gql(q)});
-        
-//         console.log('joinexit page:', page);
-//         page++;
-        
-//         results = results.concat(d.data.joinExits.map((x: any) => x.timestamp));
-
-//         if (d.data.joinExits.length < pageSize) {
-//             return results;
-//         }
-//     }
-// }
+async function getSwapsTimestamps2(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
+    return getSwapsOrJoinsTs('swaps', client, poolId, minTimestamp, maxTimestamp, pageSize);
+}
 
 async function getJoinExitTimestamps2(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    let results: number[] = [];
-    let page = 0;
-    
-    let lastId = "";
-
-    while (true) {
-        const q = `{
-            joinExits(where: {pool: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
-                timestamp,
-                id
-            }
-        }`;
-        
-        const d = await client.query({query: gql(q)});
-        
-        console.log('joinexit page:', page);
-        page++;
-        
-        results = results.concat(d.data.joinExits.map((x: any) => x.timestamp));
-        
-        if (d.data.joinExits.length < pageSize) {
-            results.sort();
-            return results;
-        }
-
-        lastId = d.data.joinExits[d.data.joinExits.length - 1].id;
-    }
+    return getSwapsOrJoinsTs('joinExits', client, poolId, minTimestamp, maxTimestamp, pageSize);
 }
 
 async function getLiquidityAtBlock(client: ApolloClient<NormalizedCacheObject>, poolId: string, block: number) {
@@ -253,7 +166,7 @@ async function calculateV(poolId: string): Promise<number[]> {
     get all swaps - done
     get all join/exits - done
     get liquidity data for all blocks with swaps,joins, or exits - done
-    fill in V, using above data
+    fill in V, using above data - done
     
     
     */
@@ -302,16 +215,17 @@ async function calculateV(poolId: string): Promise<number[]> {
 
     // test to make sure that pool.totalLiquidity ONLY changes at these blocks
     // it works
-    // let lastLiq = '';
-    // for (let b = START_BLOCK; b < END_BLOCK; b++) {
-    //     const res = await getLiquidityAtBlock(balancerClient, POOL_ID, b.toString());
-    //     console.log(b, res.totalLiquidity, blocksOfInteraction.indexOf(b) != -1);
-    //     if (lastLiq !== '' && res.totalLiquidity !== lastLiq && blocksOfInteraction.indexOf(b) === -1) {
-    //         console.log(b);
-    //     }
-    //     lastLiq = res.totalLiquidity;
-    // }
-
+    /*
+    let lastLiq = '';
+    for (let b = START_BLOCK; b < END_BLOCK; b++) {
+        const res = await getLiquidityAtBlock(balancerClient, POOL_ID, b.toString());
+        console.log(b, res.totalLiquidity, blocksOfInteraction.indexOf(b) != -1);
+        if (lastLiq !== '' && res.totalLiquidity !== lastLiq && blocksOfInteraction.indexOf(b) === -1) {
+            console.log(b);
+        }
+        lastLiq = res.totalLiquidity;
+    }
+    */
     
     // get liquidity data for all blocks with interactions
     const liquidityData = await getLiquidityForListOfBlocks(balancerClient, poolId, blocksOfInteraction);
@@ -346,6 +260,10 @@ async function calculateV(poolId: string): Promise<number[]> {
     assert(_V.length === END_BLOCK - START_BLOCK);
 
     return _V;
+}
+
+async function calculateS(poolId: string) {
+
 }
 
 (async () => {
