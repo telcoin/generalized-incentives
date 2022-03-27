@@ -1,6 +1,6 @@
 import * as dotenv from 'dotenv';
 
-import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject } from '@apollo/client'
+import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject, ApolloQueryResult } from '@apollo/client'
 import { BatchHttpLink } from "@apollo/client/link/batch-http";
 import { assert } from 'chai';
 
@@ -9,6 +9,8 @@ import fetchRetry from "fetch-retry";
 import { ethers } from 'ethers';
 
 import * as math from 'mathjs';
+import * as dfd from "danfojs-node"
+
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
@@ -35,7 +37,7 @@ const TIMING = {
 };
 
 const customFetch = fetchRetry(fetch, {
-    retries: 100
+    retries: 5
 });
 
 
@@ -51,8 +53,8 @@ const range = (start: number, end: number) => Array.from(Array(end - start + 1).
 
 async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100) {
     let results: any[] = [];
-    let promises: any[] = [];
-    let finishedPromises: any[] = [];
+    let promises: Promise<ApolloQueryResult<any>>[] = [];
+    let finishedPromises: ApolloQueryResult<any>[] = [];
 
     let currentPage = 1;
     const numPages = Math.ceil((end - start + 1)/pageSize);
@@ -145,28 +147,7 @@ async function getLiquidityAtBlock(client: ApolloClient<NormalizedCacheObject>, 
 async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheObject>, poolId: string, blocks: number[]) {
     let currentPage = 1;
 
-    // const promises: any[] = blocks.map(b => {
-    //     return new Promise(async (resolve, reject) => {
-    //         const q = `{
-    //             pools(where: {id: "${poolId}"}, block: { number: ${b} }) {
-    //                 totalLiquidity,
-    //                 totalShares
-    //             }
-    //         }`;
-
-    //         const y = (await client.query({query: gql(q)})).data.pools[0];
-            
-    //         const yCopy = JSON.parse(JSON.stringify(y));
-    //         yCopy.block = b;
-
-    //         console.log('liquidity progress:', currentPage / blocks.length);
-    //         currentPage++;
-            
-    //         resolve(yCopy);
-    //     })
-    // });
-
-    let promises2: any[] = [];
+    let promises2: Promise<any>[] = [];
     let awaitedPromises: any[] = [];
     for (let i = 0; i < blocks.length; i++) {
         promises2.push(new Promise(async (resolve, reject) => {
@@ -330,24 +311,28 @@ async function calculateS(poolTokenAddress: string) {
     const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
 
     const addresses: string[] = []; // this array also keeps track of which row is which
-    const balances: {[key: string]: any} = {};
+    const balances: {[key: string]: bigint} = {};
 
     function updateBalances(tx: {[key: string]: string}) {
         const from = tx.from.toLowerCase();
         const to = tx.to.toLowerCase();
-        const value = ethers.BigNumber.from(tx.value);
+        const value = ethers.BigNumber.from(tx.value).toBigInt();
+
+        if (value === BigInt(0)) {
+            return;
+        }
         
         if (from !== ZERO_ADDRESS) {
-            balances[from] = balances[from] || ethers.BigNumber.from(0);
-            balances[from] = balances[from].sub(value);
+            balances[from] -= value;
+            assert(balances[from] >= BigInt(0));
             if (addresses.indexOf(from) === -1) {
                 addresses.push(from);
             }
         }
         
         if (to !== ZERO_ADDRESS) {
-            balances[to] = balances[to] || ethers.BigNumber.from(0);   
-            balances[to] = balances[to].add(value);
+            balances[to] = balances[to] || BigInt(0);   
+            balances[to] += value;
             if (addresses.indexOf(to) === -1) {
                 addresses.push(to);
             }
@@ -361,11 +346,26 @@ async function calculateS(poolTokenAddress: string) {
         i++;
     }
 
-    const _S: any[][] = Array(addresses.length).fill([]);
+    const _S: number[][] = Array(addresses.length).fill([]);
+
+    function fillColumns(numberToFill: number) {
+        TIMING.fillingData.last = Date.now();
+        const nCols = _S[0].length;
+        // iterate over rows
+        for (let _row = 0; _row < _S.length; _row++) {
+            // fill in extra data for each column until we hit current block
+            const v = _S[_row][nCols - 1];
+            for (let _n = 0; _n < numberToFill; _n++) {
+                _S[_row].push(v)
+            }
+        }
+        TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
+    }
+
 
     // create initial column
     for (let j = 0; j < addresses.length; j++) {
-        _S[j] = [balances[addresses[j]]];
+        _S[j] = [Number(balances[addresses[j]])];
     }
 
     while (i < transfers.length && parseInt(transfers[i].blockNumber) < END_BLOCK) {
@@ -377,18 +377,8 @@ async function calculateS(poolTokenAddress: string) {
         updateBalances(tx);
 
         const nCols = _S[0].length;
-
         if (blockNo - START_BLOCK > nCols) {
-            // we need to fill in columns with repeated data
-            TIMING.fillingData.last = Date.now();
-            let numberToFill = blockNo - START_BLOCK - nCols;
-
-            // iterate over rows
-            for (let _row = 0; _row < _S.length; _row++) {
-                // fill in extra data for each column until we hit current block
-                _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
-            }
-            TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
+            fillColumns(blockNo - START_BLOCK - nCols);
         }
 
         assert(_S.length === addresses.length || _S.length === addresses.length - 1);
@@ -397,7 +387,7 @@ async function calculateS(poolTokenAddress: string) {
         if (addresses.length - 1 === _S.length) {
             TIMING.fillingData.last = Date.now();
             const numberToFill = blockNo - START_BLOCK;
-            _S.push(Array(numberToFill).fill(ethers.BigNumber.from(0)));
+            _S.push(Array(numberToFill).fill(0));
             TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
         }
 
@@ -405,7 +395,7 @@ async function calculateS(poolTokenAddress: string) {
         // finally, add a new column with current balances
 
         for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
-            _S[iAddr].push(balances[addresses[iAddr]]);
+            _S[iAddr].push(Number(balances[addresses[iAddr]]));
         }
 
         // assert that the new column is legit
@@ -416,29 +406,10 @@ async function calculateS(poolTokenAddress: string) {
     }
 
     const nCols = _S[0].length;
-
     if (END_BLOCK - START_BLOCK > nCols) {
-        TIMING.fillingData.last = Date.now();
-        // we need to fill in columns with repeated data
-        let numberToFill = END_BLOCK - START_BLOCK - nCols;
-
-        // iterate over rows
-        for (let _row = 0; _row < _S.length; _row++) {
-            // fill in extra data for each column until we hit current block
-            _S[_row] = _S[_row].concat(Array(numberToFill).fill(_S[_row][nCols - 1]));
-        }
-        TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
+        fillColumns(END_BLOCK - START_BLOCK - nCols);
     }
 
-    console.log('casting to js number')
-    TIMING.casting.start = Date.now();
-    for (let i = 0; i < _S.length; i++) {
-        assert(_S[0].length === _S[i].length);
-        for (let j = 0; j < _S[0].length; j++) {
-            _S[i][j] = _S[i][j] - 0;
-        }
-    }
-    TIMING.casting.end = Date.now();
 
     return _S;
 }
@@ -471,13 +442,11 @@ async function calculateS(poolTokenAddress: string) {
     assert(_S[0].length === END_BLOCK - START_BLOCK);
 
     // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
-    const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
+    const _Yp = math.multiply(_S, math.matrix(_V));
+    console.log(_Yp)
+
     
-
     console.log('filling data took', TIMING.fillingData.total);
-    console.log('casting took', TIMING.casting.end - TIMING.casting.start);
-
-
 
     console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
 })();
