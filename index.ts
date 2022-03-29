@@ -21,6 +21,8 @@ const POOLS = [
 const START_BLOCK = 26208359 - 604800/20;
 const END_BLOCK = 26208359;
 
+const INCENTIVES = 20000000;
+
 const PROMISE_BATCH_SIZE = 150;
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
@@ -494,8 +496,14 @@ async function createBlockMapping() {
 
     // TODO: apply multipliers
 
-    // TODO: add up yVecs to get TEL amount
+    // calculate _F
+    let _F = yVecPerPool[POOLS[0]];
+    for (let i = 1; i < POOLS.length; i++) {
+        _F = math.add(_F, yVecPerPool[POOLS[i]]);
+    }
 
+    const normalizedF = math.multiply(1 / math.sum(_F), _F);
+    const calculatedIncentives = math.multiply(INCENTIVES, normalizedF);
     
     console.log('filling data took', TIMING.fillingData.total);
 
