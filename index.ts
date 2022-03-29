@@ -11,11 +11,27 @@ import { ethers } from 'ethers';
 import * as math from 'mathjs';
 import * as dfd from "danfojs-node"
 
+dotenv.config();
+
+const POOLS = [
+    "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813", // tel/bal/usdc
+    "0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56" // tel/usdc
+];
+
+const START_BLOCK = 26208359 - 604800/20;
+const END_BLOCK = 26208359;
+
+const PROMISE_BATCH_SIZE = 150;
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-const PROMISE_BATCH_SIZE = 300;
+const BALANCERAPIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
+const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
 
+type Transaction = {[key: string]: string};
+
+const blockTimestampToNumber: {[key: string]: string} = {}
+const blockNumberToTimestamp: {[key: string]: string} = {}
 
 const TIMING = {
     scriptStart: 0,
@@ -39,14 +55,6 @@ const TIMING = {
 const customFetch = fetchRetry(fetch, {
     retries: 5
 });
-
-
-
-const START_BLOCK = 26208359 - 604800/20;
-const END_BLOCK = 26208359;
-
-const APIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
-const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
 
 
 const range = (start: number, end: number) => Array.from(Array(end - start + 1).keys()).map(x => x + start);
@@ -181,12 +189,11 @@ async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheO
 /////////////////////////////////////////////////////////////
 
 
-async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, blocksClient: ApolloClient<NormalizedCacheObject>, poolId: string): Promise<number[]> {
+async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, poolId: string): Promise<number[]> {
     /*
     
     PLAN:
     
-    get block <-> timestamp for relevant period of time - done
     get all swaps - done
     get all join/exits - done
     get liquidity data for all blocks with swaps,joins, or exits - done
@@ -195,35 +202,24 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, b
     
     */
 
-    const timestampToBlock: {[key: string]: string} = {}
-    const blockToTimestamp: {[key: string]: string} = {}
-    if (true) {
-        const blocks = await getBlocksFast(blocksClient, START_BLOCK, END_BLOCK);  
-
-        blocks.forEach(x => {
-            timestampToBlock[x.timestamp] = x.number;
-            blockToTimestamp[x.number] = x.timestamp;
-        });
-    }
-
     // get swaps
     const swapTimestamps = await getSwapsTimestamps2(
         balancerClient, 
         poolId, 
-        blockToTimestamp[START_BLOCK], 
-        blockToTimestamp[END_BLOCK]
+        blockNumberToTimestamp[START_BLOCK], 
+        blockNumberToTimestamp[END_BLOCK]
     );
     
     // get joins/exits
     const joinExitTimestamps = await getJoinExitTimestamps2(
         balancerClient, 
         poolId, 
-        blockToTimestamp[START_BLOCK], 
-        blockToTimestamp[END_BLOCK]
+        blockNumberToTimestamp[START_BLOCK], 
+        blockNumberToTimestamp[END_BLOCK]
     );
 
     // get blocks of interactions with pool (swap/join/exit)
-    const blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(timestampToBlock[x])).concat(swapTimestamps.map(x => parseInt(timestampToBlock[x])));
+    const blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
 
     // test to make sure that pool.totalLiquidity ONLY changes at these blocks
     // it works
@@ -278,7 +274,7 @@ async function getERC20TransferEvents(
     erc20Address: string,
     startBlock = 0,
     endBlock = 9999999999999
-): Promise<{[key: string]: string}[]> {
+): Promise<Transaction[]> {
     const URL = `https://api.polygonscan.com/api?module=account&action=tokentx&contractaddress=${erc20Address}&startblock=${startBlock}&endblock=${endBlock}&sort=asc&apikey=${process.env.POLYGONSCAN_API_KEY}`;
 
     const data = await fetch(URL).then((x) => x.json());
@@ -290,11 +286,9 @@ async function getERC20TransferEvents(
     return data.result;
 }; 
 
-async function calculateS(poolTokenAddress: string) {
+async function calculateS(transfers: Transaction[], addresses: string[]) {
     /*
     PLAN
-
-    fetch ALL erc20 transfers of LP token up until END_BLOCK
 
     recreate balances of all users at START_BLOCK by iterating over transfers
         - pause once START_BLOCK is reached
@@ -308,12 +302,12 @@ async function calculateS(poolTokenAddress: string) {
     return
 
     */
-    const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
+    // const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
 
-    const addresses: string[] = []; // this array also keeps track of which row is which
+    // const addresses: string[] = []; // this array also keeps track of which row is which
     const balances: {[key: string]: bigint} = {};
 
-    function updateBalances(tx: {[key: string]: string}) {
+    function updateBalances(tx: Transaction) {
         const from = tx.from.toLowerCase();
         const to = tx.to.toLowerCase();
         const value = ethers.BigNumber.from(tx.value).toBigInt();
@@ -325,17 +319,13 @@ async function calculateS(poolTokenAddress: string) {
         if (from !== ZERO_ADDRESS) {
             balances[from] -= value;
             assert(balances[from] >= BigInt(0));
-            if (addresses.indexOf(from) === -1) {
-                addresses.push(from);
-            }
+            assert(addresses.indexOf(from) !== -1);
         }
         
         if (to !== ZERO_ADDRESS) {
             balances[to] = balances[to] || BigInt(0);   
             balances[to] += value;
-            if (addresses.indexOf(to) === -1) {
-                addresses.push(to);
-            }
+            assert(addresses.indexOf(to) !== -1);
         }
     }
     
@@ -365,7 +355,7 @@ async function calculateS(poolTokenAddress: string) {
 
     // create initial column
     for (let j = 0; j < addresses.length; j++) {
-        _S[j] = [Number(balances[addresses[j]])];
+        _S[j] = [Number(balances[addresses[j]] || 0)];
     }
 
     while (i < transfers.length && parseInt(transfers[i].blockNumber) < END_BLOCK) {
@@ -381,21 +371,10 @@ async function calculateS(poolTokenAddress: string) {
             fillColumns(blockNo - START_BLOCK - nCols);
         }
 
-        assert(_S.length === addresses.length || _S.length === addresses.length - 1);
-
-        // if there was a new address added then we add a new row on the bottom of _S with zeros
-        if (addresses.length - 1 === _S.length) {
-            TIMING.fillingData.last = Date.now();
-            const numberToFill = blockNo - START_BLOCK;
-            _S.push(Array(numberToFill).fill(0));
-            TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
-        }
-
-        assert(_S.length === addresses.length);
         // finally, add a new column with current balances
 
         for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
-            _S[iAddr].push(Number(balances[addresses[iAddr]]));
+            _S[iAddr].push(Number(balances[addresses[iAddr]] || 0));
         }
 
         // assert that the new column is legit
@@ -414,6 +393,63 @@ async function calculateS(poolTokenAddress: string) {
     return _S;
 }
 
+async function getPoolIdsFromAddresses(balancerClient: ApolloClient<NormalizedCacheObject>, addresses: string[]): Promise<{[key: string]: string}> {
+    const poolIds: {[key: string]: string} = {};
+    
+    await Promise.all(addresses.map(async poolAddr => {
+        const q = `{
+            pools(where: {address: "${poolAddr}"}) {
+                id
+            }
+        }`
+        const res = await balancerClient.query({query: gql(q)});
+        poolIds[poolAddr] = res.data.pools[0].id;
+    }));
+
+    return poolIds;
+}
+
+async function getERC20TransferEventsOfPools(pools: string[]): Promise<{ [key: string]: Transaction[] }> {
+    const erc20TransfersByPool: {[key: string]: Transaction[]} = {};
+
+    await Promise.all(pools.map(async poolAddr => {
+        erc20TransfersByPool[poolAddr] = await getERC20TransferEvents(poolAddr, 0, END_BLOCK);
+    }));
+
+    return erc20TransfersByPool;
+}
+
+function getAllUserAddressesFromTransfers(transfers: Transaction[]): string[] {
+    const addrs: string[] = [];
+    transfers.forEach(tx => {
+        const from = tx.from.toLowerCase();
+        const to = tx.to.toLowerCase();
+
+        if (from !== ZERO_ADDRESS && addrs.indexOf(from) === -1) {
+            addrs.push(from);
+        }
+        if (to !== ZERO_ADDRESS && addrs.indexOf(to) === -1) {
+            addrs.push(to);
+        }
+    });
+    return addrs;
+}
+
+async function createBlockMapping() {
+    const blocksClient = new ApolloClient({
+        link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
+        cache: new InMemoryCache()
+    });
+
+    const blocks = await getBlocksFast(blocksClient, START_BLOCK, END_BLOCK);  
+
+    blocks.forEach(x => {
+        blockTimestampToNumber[x.timestamp] = x.number;
+        blockNumberToTimestamp[x.number] = x.timestamp;
+    });
+
+}
+
 (async () => {
     // TODO: maybe use BigNumber for _V calculation - not sure if floating point error will become problematic
     // TODO: use the graph or blockchain-etl for erc20 transfers - the 10K transfer limit could be a future issue if this is used long-term
@@ -422,31 +458,48 @@ async function calculateS(poolTokenAddress: string) {
 
     // create graphql clients
     const balancerClient = new ApolloClient({
-        link: new HttpLink({ uri: APIURL, fetch: customFetch }),
+        link: new HttpLink({ uri: BALANCERAPIURL, fetch: customFetch }),
         cache: new InMemoryCache()
     });
 
-    const blocksClient = new ApolloClient({
-        link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
-        cache: new InMemoryCache()
-    });
+    const poolIds = await getPoolIdsFromAddresses(balancerClient, POOLS);
 
-    const POOL_ID = "0xdb1db6e248d7bb4175f6e5a382d0a03fe3dcc813000100000000000000000035";
-    const POOL_ADDRESS = "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813";
+    // get all erc20 transfer data
+    const erc20TransfersByPool = await getERC20TransferEventsOfPools(POOLS);
 
-    // calculate _V
-    const _V = await calculateV(balancerClient, blocksClient, POOL_ID);
+    // build master list of users
+    const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
 
-    // calculate _S
-    const _S = await calculateS(POOL_ADDRESS);
-    assert(_S[0].length === END_BLOCK - START_BLOCK);
+    // create mapping between block timestamp and number
+    await createBlockMapping();
 
-    // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
-    const _Yp = math.multiply(_S, math.matrix(_V));
-    console.log(_Yp)
+    const yVecPerPool: {[key: string]: math.Matrix} = {};
+
+    for (let i = 0; i < POOLS.length; i++) {
+        // calculate _V
+        const _V = await calculateV(balancerClient, poolIds[POOLS[i]]);
+        assert(_V.length === END_BLOCK - START_BLOCK);
+    
+        // calculate _S
+        const _S = await calculateS(erc20TransfersByPool[POOLS[i]], allUserAddresses);
+        assert(_S[0].length === END_BLOCK - START_BLOCK);
+        assert(_S.length === allUserAddresses.length);
+    
+        // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
+        const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
+        assert(_Yp.size()[0] === allUserAddresses.length);
+
+        yVecPerPool[POOLS[i]] = _Yp;
+    }
+
+    // TODO: apply multipliers
+
+    // TODO: add up yVecs to get TEL amount
 
     
     console.log('filling data took', TIMING.fillingData.total);
 
     console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
+
+    // idea for diversity multiplier: for each pool A, go through each other pool B. the multiplier on A is SUM( max(1, Yb/Ya)*1.5 ) over B
 })();
