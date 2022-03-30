@@ -14,14 +14,16 @@ import * as dfd from "danfojs-node"
 dotenv.config();
 
 const POOLS = [
-    "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813", // tel/bal/usdc
-    "0x5c6Ee304399DBdB9C8Ef030aB642B10820DB8F56" // tel/usdc
+    "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(), // tel/bal/usdc
+    "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase() // tel/bal
 ];
 
-const START_BLOCK = 26208359 - 604800/20;
-const END_BLOCK = 26208359;
+const START_BLOCK = 26548163 - 604800/20;
+const END_BLOCK = 26548163;
 
 const INCENTIVES = 20000000;
+
+const DIVERSITY_BASE_MULTIPLIER = 0.5;
 
 const PROMISE_BATCH_SIZE = 150;
 
@@ -221,7 +223,10 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, p
     );
 
     // get blocks of interactions with pool (swap/join/exit)
-    const blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
+    let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
+
+    // remove potential duplicates
+    blocksOfInteraction = [...new Set(blocksOfInteraction)];
 
     // test to make sure that pool.totalLiquidity ONLY changes at these blocks
     // it works
@@ -452,6 +457,31 @@ async function createBlockMapping() {
 
 }
 
+function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math.Matrix}): {[key: string]: math.Matrix} {
+    const mVecPerPool: {[key: string]: math.Matrix} = {}; // holds Mp per pool
+    const pools = Object.keys(yVecPerPool);
+    for (let i = 0; i < pools.length; i++) {
+        const _Yx = yVecPerPool[pools[i]];
+        let _Mp = math.zeros(_Yx.size());
+        // summation term
+        for (let j = 0; j < pools.length; j++) {
+            if (i === j) continue;
+            let inner = math.dotDivide(yVecPerPool[pools[j]], _Yx) as math.Matrix;
+            inner = inner.map(v => v === Infinity || isNaN(v) ? 0 : v);
+            inner = inner.map(v => math.min(1, v));
+            _Mp = math.add(_Mp, inner);
+        }
+
+        _Mp = math.multiply(DIVERSITY_BASE_MULTIPLIER, _Mp) as math.Matrix;
+
+        _Mp = math.add(1, _Mp) as math.Matrix;
+
+        mVecPerPool[pools[i]] = _Mp;
+    }
+
+    return mVecPerPool;
+}
+
 (async () => {
     // TODO: maybe use BigNumber for _V calculation - not sure if floating point error will become problematic
     // TODO: use the graph or blockchain-etl for erc20 transfers - the 10K transfer limit could be a future issue if this is used long-term
@@ -494,12 +524,31 @@ async function createBlockMapping() {
         yVecPerPool[POOLS[i]] = _Yp;
     }
 
-    // TODO: apply multipliers
+    // create diversity multiplier vectors
+    const dVecPerPool = calculateDiversityMultiplierFromYVecs(yVecPerPool);
+    console.log(dVecPerPool);
 
-    // calculate _F
-    let _F = yVecPerPool[POOLS[0]];
-    for (let i = 1; i < POOLS.length; i++) {
-        _F = math.add(_F, yVecPerPool[POOLS[i]]);
+    const aa = dVecPerPool[POOLS[0]].toArray();
+    const bb = dVecPerPool[POOLS[1]].toArray();
+    for (let i = 0; i < allUserAddresses.length; i++) {
+
+        if (aa[i] !== 1 || bb[i] !== 1) {
+            console.log(aa[i], bb[i]);
+            console.log(yVecPerPool[POOLS[0]].toArray()[i], yVecPerPool[POOLS[1]].toArray()[i]);
+            console.log(allUserAddresses[i]);
+            continue;
+        }
+    }
+
+    return;
+    
+
+    // calculate _F (with diversity boost)
+    let _F = math.zeros(yVecPerPool[POOLS[0]].size());
+    for (let i = 0; i < POOLS.length; i++) {
+        const _Yp = yVecPerPool[POOLS[i]];
+        const _Dp = dVecPerPool[POOLS[i]];
+        _F = math.add(_F, math.dotMultiply(_Yp, _Dp)) as math.Matrix;
     }
 
     const normalizedF = math.multiply(1 / math.sum(_F), _F);
