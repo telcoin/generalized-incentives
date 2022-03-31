@@ -328,26 +328,26 @@ async function calculateS(transfers: Transaction[], addresses: string[]) {
     // const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
 
     // const addresses: string[] = []; // this array also keeps track of which row is which
-    const balances: {[key: string]: bigint} = {};
+    const balances: {[key: string]: ethers.BigNumber} = {};
 
     function updateBalances(tx: Transaction) {
         const from = tx.from.toLowerCase();
         const to = tx.to.toLowerCase();
-        const value = ethers.BigNumber.from(tx.value).toBigInt();
+        const value = ethers.BigNumber.from(tx.value);
 
-        if (value === BigInt(0)) {
+        if (value.eq('0')) {
             return;
         }
         
         if (from !== ZERO_ADDRESS) {
-            balances[from] -= value;
-            assert(balances[from] >= BigInt(0));
+            balances[from] = balances[from].sub(value);
+            assert(balances[from].gte('0'));
             assert(addresses.indexOf(from) !== -1);
         }
         
         if (to !== ZERO_ADDRESS) {
-            balances[to] = balances[to] || BigInt(0);   
-            balances[to] += value;
+            balances[to] = balances[to] || ethers.BigNumber.from('0');   
+            balances[to] = balances[to].add(value);
             assert(addresses.indexOf(to) !== -1);
         }
     }
