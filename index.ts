@@ -1,4 +1,5 @@
 import * as dotenv from 'dotenv';
+dotenv.config();
 
 import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject, ApolloQueryResult } from '@apollo/client'
 import { BatchHttpLink } from "@apollo/client/link/batch-http";
@@ -11,7 +12,8 @@ import { ethers } from 'ethers';
 import * as math from 'mathjs';
 import * as dfd from "danfojs-node"
 
-dotenv.config();
+import { Transaction } from "./types";
+
 
 const POOLS = [
     "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(), // tel/bal/usdc
@@ -32,7 +34,6 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const BALANCERAPIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
 const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
 
-type Transaction = {[key: string]: string};
 
 const blockTimestampToNumber: {[key: string]: string} = {}
 const blockNumberToTimestamp: {[key: string]: string} = {}
@@ -290,7 +291,22 @@ async function getERC20TransferEvents(
         throw new Error("hit 10k erc20 transfer limit");
     }
 
-    return data.result;
+    const ret = data.result as Transaction[];
+    
+    // HACK: hardcode missing polygonscan transaction
+    if (erc20Address === "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase()) {
+        ret.push({
+            hash: '0x14b4f5357a6c8861f83a98c0a7e430777cff6510fdb0e31e81d1c2318fcd557f',
+            value: '343736919250822230076',
+            from: ZERO_ADDRESS,
+            to: '0x1d9d1a83c956c90b9731d04ad04ee14333d2f8bf'.toLowerCase(),
+            blockNumber: '20666492'
+        });
+        
+        ret.sort((a, b) => parseInt(a.blockNumber) - parseInt(b.blockNumber));
+    }
+
+    return ret;
 }; 
 
 async function calculateS(transfers: Transaction[], addresses: string[]) {
@@ -526,22 +542,6 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
 
     // create diversity multiplier vectors
     const dVecPerPool = calculateDiversityMultiplierFromYVecs(yVecPerPool);
-    console.log(dVecPerPool);
-
-    const aa = dVecPerPool[POOLS[0]].toArray();
-    const bb = dVecPerPool[POOLS[1]].toArray();
-    for (let i = 0; i < allUserAddresses.length; i++) {
-
-        if (aa[i] !== 1 || bb[i] !== 1) {
-            console.log(aa[i], bb[i]);
-            console.log(yVecPerPool[POOLS[0]].toArray()[i], yVecPerPool[POOLS[1]].toArray()[i]);
-            console.log(allUserAddresses[i]);
-            continue;
-        }
-    }
-
-    return;
-    
 
     // calculate _F (with diversity boost)
     let _F = math.zeros(yVecPerPool[POOLS[0]].size());
@@ -552,7 +552,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     }
 
     const normalizedF = math.multiply(1 / math.sum(_F), _F);
-    const calculatedIncentives = math.multiply(INCENTIVES, normalizedF);
+    const calculatedIncentives = math.multiply(INCENTIVES, normalizedF) as math.Matrix;
     
     console.log('filling data took', TIMING.fillingData.total);
 
