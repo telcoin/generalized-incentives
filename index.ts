@@ -15,6 +15,8 @@ import * as dfd from "danfojs-node"
 import { getTransfers, getTransfersOfPools } from './api/alchemy';
 import { Transfer } from './api/types';
 
+import { getBlocks, getJoinExitTimestampsBalancer, getLiquidityAtBlockBalancer, getLiquidityForListOfBlocksBalancer, getPoolIdsFromAddresses, getSwapsTimestampsBalancer } from './api/graph';
+
 
 const POOLS = [
     "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(), // tel/bal/usdc
@@ -62,137 +64,10 @@ const customFetch = fetchRetry(fetch, {
     retries: 5
 });
 
-async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100) {
-    let results: any[] = [];
-    let promises: Promise<ApolloQueryResult<any>>[] = [];
-    let finishedPromises: ApolloQueryResult<any>[] = [];
-
-    let currentPage = 1;
-    const numPages = Math.ceil((end - start + 1)/pageSize);
-    
-    for (let a = start; a <= end; a += pageSize) {
-        const q = `{
-            blocks(where: {number_gte: ${a}, number_lt: ${a+pageSize}}, orderBy: number, orderDirection: asc) {
-                number
-                timestamp
-            }
-        }`;
-
-        promises.push(new Promise(async (resolve, reject) => {
-            const y = await client.query({query: gql(q)});
-            console.log('block progress:', currentPage / numPages);
-            currentPage++;
-            resolve(y);
-        }));
-
-        if (promises.length === PROMISE_BATCH_SIZE) {
-            finishedPromises = finishedPromises.concat(await Promise.all(promises));
-            promises = [];
-        }
-    }
-    
-    finishedPromises = finishedPromises.concat(await Promise.all(promises));
-    
-    finishedPromises.forEach(r => {
-        results = results.concat(r.data.blocks);
-    });
-
-    return results;
-}
-
-
-async function getSwapsOrJoinsTs(type: string, client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number): Promise<number[]> {
-    let results: number[] = [];
-    let page = 0;
-    
-    let lastId = "";
-
-    while (true) {
-        const q = `{
-            ${type}(where: {pool${type === 'swaps' ? 'Id' : ''}: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
-                timestamp,
-                id
-            }
-        }`;
-        
-        const d = await client.query({query: gql(q)});
-        
-        
-        console.log(`${type} page:`, page);
-        page++;
-        
-        results = results.concat(d.data[type].map((x: any) => x.timestamp));
-        
-        if (d.data[type].length < pageSize) {
-            results.sort();
-            return results;
-        }
-
-        lastId = d.data[type][d.data[type].length - 1].id;
-    }
-}
-
-async function getSwapsTimestamps2(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTs('swaps', client, poolId, minTimestamp, maxTimestamp, pageSize);
-}
-
-async function getJoinExitTimestamps2(client: ApolloClient<NormalizedCacheObject>, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTs('joinExits', client, poolId, minTimestamp, maxTimestamp, pageSize);
-}
-
-async function getLiquidityAtBlock(client: ApolloClient<NormalizedCacheObject>, poolId: string, block: number) {
-    const q = `{
-        pools(where: {id: "${poolId}"}, block: { number: ${block} }) {
-            totalLiquidity,
-            totalShares
-        }
-    }`;
-
-    const y = (await client.query({query: gql(q)})).data.pools[0];
-            
-    const yCopy = JSON.parse(JSON.stringify(y));
-    yCopy.block = block;
-    return yCopy;
-}
-
-async function getLiquidityForListOfBlocks(client: ApolloClient<NormalizedCacheObject>, poolId: string, blocks: number[]) {
-    let currentPage = 1;
-
-    let promises2: Promise<any>[] = [];
-    let awaitedPromises: any[] = [];
-    for (let i = 0; i < blocks.length; i++) {
-        promises2.push(new Promise(async (resolve, reject) => {
-            const q = `{
-                pools(where: {id: "${poolId}"}, block: { number: ${blocks[i]} }) {
-                    totalLiquidity,
-                    totalShares
-                }
-            }`;
-
-            const y = (await client.query({query: gql(q)})).data.pools[0];
-            
-            const yCopy = JSON.parse(JSON.stringify(y));
-            yCopy.block = blocks[i];
-
-            console.log('liquidity progress:', currentPage / blocks.length);
-            currentPage++;
-            
-            resolve(yCopy);
-        }));
-
-        if (promises2.length === PROMISE_BATCH_SIZE) {
-            awaitedPromises = awaitedPromises.concat(await Promise.all(promises2));
-            promises2 = [];
-        }
-    }
-
-    return awaitedPromises.concat(await Promise.all(promises2));
-}
-
 /////////////////////////////////////////////////////////////
 
 
-async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, poolId: string): Promise<number[]> {
+async function calculateV(poolId: string): Promise<number[]> {
     /*
     
     PLAN:
@@ -206,16 +81,14 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, p
     */
 
     // get swaps
-    const swapTimestamps = await getSwapsTimestamps2(
-        balancerClient, 
+    const swapTimestamps = await getSwapsTimestampsBalancer(
         poolId, 
         blockNumberToTimestamp[START_BLOCK], 
         blockNumberToTimestamp[END_BLOCK]
     );
     
     // get joins/exits
-    const joinExitTimestamps = await getJoinExitTimestamps2(
-        balancerClient, 
+    const joinExitTimestamps = await getJoinExitTimestampsBalancer(
         poolId, 
         blockNumberToTimestamp[START_BLOCK], 
         blockNumberToTimestamp[END_BLOCK]
@@ -242,7 +115,7 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, p
     */
     
     // get liquidity data for all blocks with interactions
-    const liquidityData = await getLiquidityForListOfBlocks(balancerClient, poolId, blocksOfInteraction);
+    const liquidityData = await getLiquidityForListOfBlocksBalancer(poolId, blocksOfInteraction);
     assert(liquidityData.length === blocksOfInteraction.length);
 
     liquidityData.sort((a, b) => {
@@ -257,7 +130,7 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, p
     // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
     let _V: number[] = [];
 
-    const initialLiquidity = await getLiquidityAtBlock(balancerClient, poolId, START_BLOCK);
+    const initialLiquidity = await getLiquidityAtBlockBalancer(poolId, START_BLOCK);
     _V = Array(liquidityData[0].block - START_BLOCK).fill(initialLiquidity.totalLiquidity / initialLiquidity.totalShares);
 
     for (let i = 0; i < liquidityData.length - 1; i++) {
@@ -382,22 +255,6 @@ async function calculateS(transfers: Transfer[], addresses: string[]) {
     return _S;
 }
 
-async function getPoolIdsFromAddresses(balancerClient: ApolloClient<NormalizedCacheObject>, addresses: string[]): Promise<{[key: string]: string}> {
-    const poolIds: {[key: string]: string} = {};
-    
-    await Promise.all(addresses.map(async poolAddr => {
-        const q = `{
-            pools(where: {address: "${poolAddr}"}) {
-                id
-            }
-        }`
-        const res = await balancerClient.query({query: gql(q)});
-        poolIds[poolAddr] = res.data.pools[0].id;
-    }));
-
-    return poolIds;
-}
-
 
 function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     const addrs: string[] = [];
@@ -416,12 +273,7 @@ function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
 }
 
 async function createBlockMapping() {
-    const blocksClient = new ApolloClient({
-        link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
-        cache: new InMemoryCache()
-    });
-
-    const blocks = await getBlocksFast(blocksClient, START_BLOCK, END_BLOCK);  
+    const blocks = await getBlocks(START_BLOCK, END_BLOCK);  
 
     blocks.forEach(x => {
         blockTimestampToNumber[x.timestamp] = x.number;
@@ -461,13 +313,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
 
     TIMING.scriptStart = Date.now();
 
-    // create graphql clients
-    const balancerClient = new ApolloClient({
-        link: new HttpLink({ uri: BALANCERAPIURL, fetch: customFetch }),
-        cache: new InMemoryCache()
-    });
-
-    const poolIds = await getPoolIdsFromAddresses(balancerClient, POOLS);
+    const poolIds = await getPoolIdsFromAddresses(POOLS);
 
     // get all erc20 transfer data
     const erc20TransfersByPool = await getTransfersOfPools(POOLS, 0, END_BLOCK);
@@ -482,7 +328,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
 
     for (let i = 0; i < POOLS.length; i++) {
         // calculate _V
-        const _V = await calculateV(balancerClient, poolIds[POOLS[i]]);
+        const _V = await calculateV(poolIds[POOLS[i]]);
         assert(_V.length === END_BLOCK - START_BLOCK);
     
         // calculate _S
