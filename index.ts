@@ -13,11 +13,20 @@ import * as alchemy from './api/alchemy';
 import { HistoricalTokenValue, Transfer } from './api/types';
 
 import * as graph from './api/graph';
+import { testS, testVBalancer } from './helpers/testingHelper';
 
 
 const POOLS = [
-    "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(), // tel/bal/usdc
-    "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase() // tel/bal
+    {
+        symbol: "TEL/BAL/USDC",
+        address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
+        protocol: "balancer"
+    },
+    {
+        symbol: "TEL/BAL",
+        address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
+        protocol: "balancer"
+    }
 ];
 
 const START_BLOCK = 26548163 - 604800/20;
@@ -57,7 +66,7 @@ const customFetch = fetchRetry(fetch, {
 
 /////////////////////////////////////////////////////////////
 
-function calculateVNoApi(liquidityData: HistoricalTokenValue[], liquidityValueAtStartBlock: number, startBlock: number, endBlock: number): number[] {
+function calculateVFromData(liquidityData: HistoricalTokenValue[], liquidityValueAtStartBlock: number, startBlock: number, endBlock: number): number[] {
     liquidityData.sort((a, b) => {
         return a.block - b.block;
     })
@@ -86,7 +95,7 @@ function calculateVNoApi(liquidityData: HistoricalTokenValue[], liquidityValueAt
     return _V;
 }
 
-async function calculateVWithApi(poolAddress: string, startBlock: number, endBlock: number): Promise<number[]> {
+async function calculateVBalancer(poolAddress: string, startBlock: number, endBlock: number): Promise<number[]> {
     // to get liquidity data, we first need to get blocks where swaps, adds, or removeds occur
     // get swaps
     const swapTimestamps = await graph.getSwapsTimestampsBalancer(
@@ -122,92 +131,8 @@ async function calculateVWithApi(poolAddress: string, startBlock: number, endBlo
 
     const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
 
-    return calculateVNoApi(liquidityData, initialLiquidity, startBlock, endBlock);
+    return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
 }
-
-
-// async function calculateV(poolId: string): Promise<number[]> {
-//     /*
-    
-//     PLAN:
-    
-//     get all swaps - done
-//     get all join/exits - done
-//     get liquidity data for all blocks with swaps,joins, or exits - done
-//     fill in V, using above data - done
-    
-    
-//     */
-
-//     // get swaps
-//     const swapTimestamps = await graph.getSwapsTimestampsBalancer(
-//         poolId, 
-//         blockNumberToTimestamp[START_BLOCK], 
-//         blockNumberToTimestamp[END_BLOCK]
-//     );
-    
-//     // get joins/exits
-//     const joinExitTimestamps = await graph.getJoinExitTimestampsBalancer(
-//         poolId, 
-//         blockNumberToTimestamp[START_BLOCK], 
-//         blockNumberToTimestamp[END_BLOCK]
-//     );
-
-//     // get blocks of interactions with pool (swap/join/exit)
-//     let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
-
-//     // remove potential duplicates
-//     blocksOfInteraction = [...new Set(blocksOfInteraction)];
-
-//     // test to make sure that pool.totalLiquidity ONLY changes at these blocks
-//     // it works
-//     /*
-//     let lastLiq = '';
-//     for (let b = START_BLOCK; b < END_BLOCK; b++) {
-//         const res = await getLiquidityAtBlock(balancerClient, POOL_ID, b.toString());
-//         console.log(b, res.totalLiquidity, blocksOfInteraction.indexOf(b) != -1);
-//         if (lastLiq !== '' && res.totalLiquidity !== lastLiq && blocksOfInteraction.indexOf(b) === -1) {
-//             console.log(b);
-//         }
-//         lastLiq = res.totalLiquidity;
-//     }
-//     */
-    
-//     // get liquidity data for all blocks with interactions
-//     const liquidityData = await graph.getLiquidityForListOfBlocksBalancer(poolId, blocksOfInteraction);
-//     assert(liquidityData.length === blocksOfInteraction.length);
-
-//     liquidityData.sort((a, b) => {
-//         return a.block - b.block;
-//     })
-
-//     // make sure it is in ascending block order
-//     for (let i = 0; i < liquidityData.length-1; i++) {
-//         assert(liquidityData[i].block <= liquidityData[i+1].block);
-//     }
-
-//     // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
-//     let _V: number[] = [];
-
-//     const initialLiquidity = await graph.getLiquidityAtBlockBalancer(poolId, START_BLOCK);
-//     _V = Array(liquidityData[0].block - START_BLOCK).fill(initialLiquidity.totalLiquidity / initialLiquidity.totalShares);
-
-//     for (let i = 0; i < liquidityData.length - 1; i++) {
-//         const liq0 = liquidityData[i];
-//         const liq1 = liquidityData[i+1];
-//         const val = liq0.totalLiquidity / liq0.totalShares;
-
-//         _V = _V.concat(Array(liq1.block - liq0.block).fill(val));
-//     }
-
-//     const liqf = liquidityData[liquidityData.length - 1];
-//     _V = _V.concat(Array(END_BLOCK - liqf.block).fill(liqf.totalLiquidity / liqf.totalShares));
-
-//     assert(_V.length === END_BLOCK - START_BLOCK);
-
-//     return _V;
-// }
-
 
 async function calculateS(transfers: Transfer[], addresses: string[]) {
     /*
@@ -225,9 +150,7 @@ async function calculateS(transfers: Transfer[], addresses: string[]) {
     return
 
     */
-    // const transfers = await getERC20TransferEvents(poolTokenAddress, 0, END_BLOCK);
 
-    // const addresses: string[] = []; // this array also keeps track of which row is which
     const balances: {[key: string]: ethers.BigNumber} = {};
 
     function updateBalances(tx: Transfer) {
@@ -373,7 +296,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     TIMING.scriptStart = Date.now();
 
     // get all erc20 transfer data
-    const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS, 0, END_BLOCK);
+    const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS.map(p => p.address), 0, END_BLOCK);
 
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
@@ -384,30 +307,30 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     const yVecPerPool: {[key: string]: math.Matrix} = {};
 
     for (let i = 0; i < POOLS.length; i++) {
+        const pool = POOLS[i];
         // calculate _V
-        const _V = await calculateVWithApi(POOLS[i], START_BLOCK, END_BLOCK);
-        assert(_V.length === END_BLOCK - START_BLOCK);
+        const _V = await calculateVBalancer(pool.address, START_BLOCK, END_BLOCK);
+        await testVBalancer(_V, pool.address, START_BLOCK, END_BLOCK);
     
         // calculate _S
-        const _S = await calculateS(erc20TransfersByPool[POOLS[i]], allUserAddresses);
-        assert(_S[0].length === END_BLOCK - START_BLOCK);
-        assert(_S.length === allUserAddresses.length);
+        const _S = await calculateS(erc20TransfersByPool[pool.address], allUserAddresses);
+        await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
     
         // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
         const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
         assert(_Yp.size()[0] === allUserAddresses.length);
 
-        yVecPerPool[POOLS[i]] = _Yp;
+        yVecPerPool[pool.address] = _Yp;
     }
 
     // create diversity multiplier vectors
     const dVecPerPool = calculateDiversityMultiplierFromYVecs(yVecPerPool);
 
     // calculate _F (with diversity boost)
-    let _F = math.zeros(yVecPerPool[POOLS[0]].size());
+    let _F = math.zeros(Object.values(yVecPerPool)[0].size());
     for (let i = 0; i < POOLS.length; i++) {
-        const _Yp = yVecPerPool[POOLS[i]];
-        const _Dp = dVecPerPool[POOLS[i]];
+        const _Yp = yVecPerPool[POOLS[i].address];
+        const _Dp = dVecPerPool[POOLS[i].address];
         _F = math.add(_F, math.dotMultiply(_Yp, _Dp)) as math.Matrix;
     }
 
