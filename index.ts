@@ -12,7 +12,8 @@ import { ethers } from 'ethers';
 import * as math from 'mathjs';
 import * as dfd from "danfojs-node"
 
-import { Transaction } from "./types";
+import { getTransfers, getTransfersOfPools } from './api/alchemy';
+import { Transfer } from './api/types';
 
 
 const POOLS = [
@@ -60,9 +61,6 @@ const TIMING = {
 const customFetch = fetchRetry(fetch, {
     retries: 5
 });
-
-
-const range = (start: number, end: number) => Array.from(Array(end - start + 1).keys()).map(x => x + start);
 
 async function getBlocksFast(client: ApolloClient<NormalizedCacheObject>, start:number, end:number, pageSize:number = 100) {
     let results: any[] = [];
@@ -278,38 +276,8 @@ async function calculateV(balancerClient: ApolloClient<NormalizedCacheObject>, p
     return _V;
 }
 
-async function getERC20TransferEvents(
-    erc20Address: string,
-    startBlock = 0,
-    endBlock = 9999999999999
-): Promise<Transaction[]> {
-    const URL = `https://api.polygonscan.com/api?module=account&action=tokentx&contractaddress=${erc20Address}&startblock=${startBlock}&endblock=${endBlock}&sort=asc&apikey=${process.env.POLYGONSCAN_API_KEY}`;
 
-    const data = await fetch(URL).then((x) => x.json());
-
-    if (data.result.length === 10000) {
-        throw new Error("hit 10k erc20 transfer limit");
-    }
-
-    const ret = data.result as Transaction[];
-    
-    // HACK: hardcode missing polygonscan transaction
-    if (erc20Address === "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase()) {
-        ret.push({
-            hash: '0x14b4f5357a6c8861f83a98c0a7e430777cff6510fdb0e31e81d1c2318fcd557f',
-            value: '343736919250822230076',
-            from: ZERO_ADDRESS,
-            to: '0x1d9d1a83c956c90b9731d04ad04ee14333d2f8bf'.toLowerCase(),
-            blockNumber: '20666492'
-        });
-        
-        ret.sort((a, b) => parseInt(a.blockNumber) - parseInt(b.blockNumber));
-    }
-
-    return ret;
-}; 
-
-async function calculateS(transfers: Transaction[], addresses: string[]) {
+async function calculateS(transfers: Transfer[], addresses: string[]) {
     /*
     PLAN
 
@@ -330,10 +298,10 @@ async function calculateS(transfers: Transaction[], addresses: string[]) {
     // const addresses: string[] = []; // this array also keeps track of which row is which
     const balances: {[key: string]: ethers.BigNumber} = {};
 
-    function updateBalances(tx: Transaction) {
+    function updateBalances(tx: Transfer) {
         const from = tx.from.toLowerCase();
         const to = tx.to.toLowerCase();
-        const value = ethers.BigNumber.from(tx.value);
+        const value = ethers.BigNumber.from(tx.rawContract.value);
 
         if (value.eq('0')) {
             return;
@@ -353,7 +321,7 @@ async function calculateS(transfers: Transaction[], addresses: string[]) {
     }
     
     let i = 0;
-    while (parseInt(transfers[i].blockNumber) <= START_BLOCK) {
+    while (parseInt(transfers[i].blockNum) <= START_BLOCK) {
         const tx = transfers[i];
         updateBalances(tx);
         i++;
@@ -381,11 +349,9 @@ async function calculateS(transfers: Transaction[], addresses: string[]) {
         _S[j] = [Number(balances[addresses[j]] || 0)];
     }
 
-    while (i < transfers.length && parseInt(transfers[i].blockNumber) < END_BLOCK) {
+    while (i < transfers.length && parseInt(transfers[i].blockNum) < END_BLOCK) {
         const tx = transfers[i];
-        const from = tx.from.toLowerCase();
-        const to = tx.to.toLowerCase();
-        const blockNo = parseInt(tx.blockNumber);
+        const blockNo = parseInt(tx.blockNum);
         
         updateBalances(tx);
 
@@ -432,17 +398,8 @@ async function getPoolIdsFromAddresses(balancerClient: ApolloClient<NormalizedCa
     return poolIds;
 }
 
-async function getERC20TransferEventsOfPools(pools: string[]): Promise<{ [key: string]: Transaction[] }> {
-    const erc20TransfersByPool: {[key: string]: Transaction[]} = {};
 
-    await Promise.all(pools.map(async poolAddr => {
-        erc20TransfersByPool[poolAddr] = await getERC20TransferEvents(poolAddr, 0, END_BLOCK);
-    }));
-
-    return erc20TransfersByPool;
-}
-
-function getAllUserAddressesFromTransfers(transfers: Transaction[]): string[] {
+function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     const addrs: string[] = [];
     transfers.forEach(tx => {
         const from = tx.from.toLowerCase();
@@ -513,7 +470,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     const poolIds = await getPoolIdsFromAddresses(balancerClient, POOLS);
 
     // get all erc20 transfer data
-    const erc20TransfersByPool = await getERC20TransferEventsOfPools(POOLS);
+    const erc20TransfersByPool = await getTransfersOfPools(POOLS, 0, END_BLOCK);
 
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
