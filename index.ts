@@ -1,8 +1,6 @@
 import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { ApolloClient, InMemoryCache, gql, HttpLink, NormalizedCacheObject, ApolloQueryResult } from '@apollo/client'
-import { BatchHttpLink } from "@apollo/client/link/batch-http";
 import { assert } from 'chai';
 
 import fetch from "cross-fetch";
@@ -10,12 +8,11 @@ import fetchRetry from "fetch-retry";
 import { ethers } from 'ethers';
 
 import * as math from 'mathjs';
-import * as dfd from "danfojs-node"
 
-import { getTransfers, getTransfersOfPools } from './api/alchemy';
-import { Transfer } from './api/types';
+import * as alchemy from './api/alchemy';
+import { HistoricalTokenValue, Transfer } from './api/types';
 
-import { getBlocks, getJoinExitTimestampsBalancer, getLiquidityAtBlockBalancer, getLiquidityForListOfBlocksBalancer, getPoolIdsFromAddresses, getSwapsTimestampsBalancer } from './api/graph';
+import * as graph from './api/graph';
 
 
 const POOLS = [
@@ -30,13 +27,7 @@ const INCENTIVES = 20000000;
 
 const DIVERSITY_BASE_MULTIPLIER = 0.5;
 
-const PROMISE_BATCH_SIZE = 150;
-
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-
-const BALANCERAPIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
-const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
-
 
 const blockTimestampToNumber: {[key: string]: string} = {}
 const blockNumberToTimestamp: {[key: string]: string} = {}
@@ -66,58 +57,7 @@ const customFetch = fetchRetry(fetch, {
 
 /////////////////////////////////////////////////////////////
 
-
-async function calculateV(poolId: string): Promise<number[]> {
-    /*
-    
-    PLAN:
-    
-    get all swaps - done
-    get all join/exits - done
-    get liquidity data for all blocks with swaps,joins, or exits - done
-    fill in V, using above data - done
-    
-    
-    */
-
-    // get swaps
-    const swapTimestamps = await getSwapsTimestampsBalancer(
-        poolId, 
-        blockNumberToTimestamp[START_BLOCK], 
-        blockNumberToTimestamp[END_BLOCK]
-    );
-    
-    // get joins/exits
-    const joinExitTimestamps = await getJoinExitTimestampsBalancer(
-        poolId, 
-        blockNumberToTimestamp[START_BLOCK], 
-        blockNumberToTimestamp[END_BLOCK]
-    );
-
-    // get blocks of interactions with pool (swap/join/exit)
-    let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
-
-    // remove potential duplicates
-    blocksOfInteraction = [...new Set(blocksOfInteraction)];
-
-    // test to make sure that pool.totalLiquidity ONLY changes at these blocks
-    // it works
-    /*
-    let lastLiq = '';
-    for (let b = START_BLOCK; b < END_BLOCK; b++) {
-        const res = await getLiquidityAtBlock(balancerClient, POOL_ID, b.toString());
-        console.log(b, res.totalLiquidity, blocksOfInteraction.indexOf(b) != -1);
-        if (lastLiq !== '' && res.totalLiquidity !== lastLiq && blocksOfInteraction.indexOf(b) === -1) {
-            console.log(b);
-        }
-        lastLiq = res.totalLiquidity;
-    }
-    */
-    
-    // get liquidity data for all blocks with interactions
-    const liquidityData = await getLiquidityForListOfBlocksBalancer(poolId, blocksOfInteraction);
-    assert(liquidityData.length === blocksOfInteraction.length);
-
+function calculateVNoApi(liquidityData: HistoricalTokenValue[], liquidityValueAtStartBlock: number, startBlock: number, endBlock: number): number[] {
     liquidityData.sort((a, b) => {
         return a.block - b.block;
     })
@@ -130,24 +70,143 @@ async function calculateV(poolId: string): Promise<number[]> {
     // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
     let _V: number[] = [];
 
-    const initialLiquidity = await getLiquidityAtBlockBalancer(poolId, START_BLOCK);
-    _V = Array(liquidityData[0].block - START_BLOCK).fill(initialLiquidity.totalLiquidity / initialLiquidity.totalShares);
+    _V = Array(liquidityData[0].block - startBlock).fill(liquidityValueAtStartBlock);
 
     for (let i = 0; i < liquidityData.length - 1; i++) {
         const liq0 = liquidityData[i];
         const liq1 = liquidityData[i+1];
-        const val = liq0.totalLiquidity / liq0.totalShares;
-
-        _V = _V.concat(Array(liq1.block - liq0.block).fill(val));
+        _V = _V.concat(Array(liq1.block - liq0.block).fill(liq0.value));
     }
 
     const liqf = liquidityData[liquidityData.length - 1];
-    _V = _V.concat(Array(END_BLOCK - liqf.block).fill(liqf.totalLiquidity / liqf.totalShares));
+    _V = _V.concat(Array(endBlock - liqf.block).fill(liqf.value));
 
-    assert(_V.length === END_BLOCK - START_BLOCK);
+    assert(_V.length === endBlock - startBlock);
 
     return _V;
 }
+
+async function calculateVWithApi(poolAddress: string, startBlock: number, endBlock: number): Promise<number[]> {
+    // to get liquidity data, we first need to get blocks where swaps, adds, or removeds occur
+    // get swaps
+    const swapTimestamps = await graph.getSwapsTimestampsBalancer(
+        poolAddress, 
+        blockNumberToTimestamp[startBlock], 
+        blockNumberToTimestamp[endBlock]
+    );
+    
+    // get joins/exits
+    const joinExitTimestamps = await graph.getJoinExitTimestampsBalancer(
+        poolAddress, 
+        blockNumberToTimestamp[startBlock], 
+        blockNumberToTimestamp[endBlock]
+    );
+
+    // get blocks of interactions with pool (swap/join/exit)
+    let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
+
+    // remove potential duplicates
+    blocksOfInteraction = [...new Set(blocksOfInteraction)];
+
+    const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
+    assert(liquidityData.length === blocksOfInteraction.length);
+
+    liquidityData.sort((a, b) => {
+        return a.block - b.block;
+    })
+
+    // make sure it is in ascending block order
+    for (let i = 0; i < liquidityData.length-1; i++) {
+        assert(liquidityData[i].block <= liquidityData[i+1].block);
+    }
+
+    const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
+
+    return calculateVNoApi(liquidityData, initialLiquidity, startBlock, endBlock);
+}
+
+
+// async function calculateV(poolId: string): Promise<number[]> {
+//     /*
+    
+//     PLAN:
+    
+//     get all swaps - done
+//     get all join/exits - done
+//     get liquidity data for all blocks with swaps,joins, or exits - done
+//     fill in V, using above data - done
+    
+    
+//     */
+
+//     // get swaps
+//     const swapTimestamps = await graph.getSwapsTimestampsBalancer(
+//         poolId, 
+//         blockNumberToTimestamp[START_BLOCK], 
+//         blockNumberToTimestamp[END_BLOCK]
+//     );
+    
+//     // get joins/exits
+//     const joinExitTimestamps = await graph.getJoinExitTimestampsBalancer(
+//         poolId, 
+//         blockNumberToTimestamp[START_BLOCK], 
+//         blockNumberToTimestamp[END_BLOCK]
+//     );
+
+//     // get blocks of interactions with pool (swap/join/exit)
+//     let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
+
+//     // remove potential duplicates
+//     blocksOfInteraction = [...new Set(blocksOfInteraction)];
+
+//     // test to make sure that pool.totalLiquidity ONLY changes at these blocks
+//     // it works
+//     /*
+//     let lastLiq = '';
+//     for (let b = START_BLOCK; b < END_BLOCK; b++) {
+//         const res = await getLiquidityAtBlock(balancerClient, POOL_ID, b.toString());
+//         console.log(b, res.totalLiquidity, blocksOfInteraction.indexOf(b) != -1);
+//         if (lastLiq !== '' && res.totalLiquidity !== lastLiq && blocksOfInteraction.indexOf(b) === -1) {
+//             console.log(b);
+//         }
+//         lastLiq = res.totalLiquidity;
+//     }
+//     */
+    
+//     // get liquidity data for all blocks with interactions
+//     const liquidityData = await graph.getLiquidityForListOfBlocksBalancer(poolId, blocksOfInteraction);
+//     assert(liquidityData.length === blocksOfInteraction.length);
+
+//     liquidityData.sort((a, b) => {
+//         return a.block - b.block;
+//     })
+
+//     // make sure it is in ascending block order
+//     for (let i = 0; i < liquidityData.length-1; i++) {
+//         assert(liquidityData[i].block <= liquidityData[i+1].block);
+//     }
+
+//     // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
+//     let _V: number[] = [];
+
+//     const initialLiquidity = await graph.getLiquidityAtBlockBalancer(poolId, START_BLOCK);
+//     _V = Array(liquidityData[0].block - START_BLOCK).fill(initialLiquidity.totalLiquidity / initialLiquidity.totalShares);
+
+//     for (let i = 0; i < liquidityData.length - 1; i++) {
+//         const liq0 = liquidityData[i];
+//         const liq1 = liquidityData[i+1];
+//         const val = liq0.totalLiquidity / liq0.totalShares;
+
+//         _V = _V.concat(Array(liq1.block - liq0.block).fill(val));
+//     }
+
+//     const liqf = liquidityData[liquidityData.length - 1];
+//     _V = _V.concat(Array(END_BLOCK - liqf.block).fill(liqf.totalLiquidity / liqf.totalShares));
+
+//     assert(_V.length === END_BLOCK - START_BLOCK);
+
+//     return _V;
+// }
 
 
 async function calculateS(transfers: Transfer[], addresses: string[]) {
@@ -273,7 +332,7 @@ function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
 }
 
 async function createBlockMapping() {
-    const blocks = await getBlocks(START_BLOCK, END_BLOCK);  
+    const blocks = await graph.getBlocks(START_BLOCK, END_BLOCK);  
 
     blocks.forEach(x => {
         blockTimestampToNumber[x.timestamp] = x.number;
@@ -313,10 +372,8 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
 
     TIMING.scriptStart = Date.now();
 
-    const poolIds = await getPoolIdsFromAddresses(POOLS);
-
     // get all erc20 transfer data
-    const erc20TransfersByPool = await getTransfersOfPools(POOLS, 0, END_BLOCK);
+    const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS, 0, END_BLOCK);
 
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
@@ -328,7 +385,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
 
     for (let i = 0; i < POOLS.length; i++) {
         // calculate _V
-        const _V = await calculateV(poolIds[POOLS[i]]);
+        const _V = await calculateVWithApi(POOLS[i], START_BLOCK, END_BLOCK);
         assert(_V.length === END_BLOCK - START_BLOCK);
     
         // calculate _S

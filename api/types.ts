@@ -45,3 +45,8 @@ export interface Param {
     category:          string[];
     pageKey:           string;
 }
+
+export type HistoricalTokenValue = {
+    block: number,
+    value: number
+};

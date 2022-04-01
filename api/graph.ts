@@ -1,6 +1,7 @@
 import fetch from "cross-fetch";
 import fetchRetry from "fetch-retry";
 import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject, ApolloQueryResult, gql } from "@apollo/client";
+import { HistoricalTokenValue } from "./types";
 
 const customFetch = fetchRetry(fetch, {
     retries: 5
@@ -61,12 +62,14 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
     return results;
 }
 
-async function getSwapsOrJoinsTsBalancer(type: string, poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number): Promise<number[]> {
+async function getSwapsOrJoinsTsBalancer(type: string, poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number): Promise<number[]> {
     let results: number[] = [];
     let page = 0;
     
     let lastId = "";
 
+    const poolId = await getPoolIdFromAddress(poolAddress);
+    
     while (true) {
         const q = `{
             ${type}(where: {pool${type === 'swaps' ? 'Id' : ''}: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
@@ -92,15 +95,17 @@ async function getSwapsOrJoinsTsBalancer(type: string, poolId: string, minTimest
     }
 }
 
-export async function getSwapsTimestampsBalancer(poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTsBalancer('swaps', poolId, minTimestamp, maxTimestamp, pageSize);
+export async function getSwapsTimestampsBalancer(poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
+    return getSwapsOrJoinsTsBalancer('swaps', poolAddress, minTimestamp, maxTimestamp, pageSize);
 }
 
-export async function getJoinExitTimestampsBalancer(poolId: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTsBalancer('joinExits', poolId, minTimestamp, maxTimestamp, pageSize);
+export async function getJoinExitTimestampsBalancer(poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
+    return getSwapsOrJoinsTsBalancer('joinExits', poolAddress, minTimestamp, maxTimestamp, pageSize);
 }
 
-export async function getLiquidityAtBlockBalancer(poolId: string, block: number) {
+export async function getLpTokenValueAtBlockBalancer(poolAddress: string, block: number): Promise<number> {
+    const poolId = await getPoolIdFromAddress(poolAddress);
+
     const q = `{
         pools(where: {id: "${poolId}"}, block: { number: ${block} }) {
             totalLiquidity,
@@ -109,35 +114,36 @@ export async function getLiquidityAtBlockBalancer(poolId: string, block: number)
     }`;
 
     const y = (await balancerClient.query({query: gql(q)})).data.pools[0];
-            
-    const yCopy = JSON.parse(JSON.stringify(y));
-    yCopy.block = block;
-    return yCopy;
+    
+    return Number(y.totalLiquidity) / Number(y.totalShares);
 }
 
-export async function getLiquidityForListOfBlocksBalancer(poolId: string, blocks: number[]) {
+export async function getHistoricalLpTokenValuesBalancer(poolAddress: string, blocks: number[]): Promise<HistoricalTokenValue[]> {
+    const poolId = await getPoolIdFromAddress(poolAddress);
+    
     let currentPage = 1;
 
-    let promises2: Promise<any>[] = [];
-    let awaitedPromises: any[] = [];
+    let promises2: Promise<HistoricalTokenValue>[] = [];
+    let awaitedPromises: HistoricalTokenValue[] = [];
     for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
         promises2.push(new Promise(async (resolve, reject) => {
             const q = `{
-                pools(where: {id: "${poolId}"}, block: { number: ${blocks[i]} }) {
+                pools(where: {id: "${poolId}"}, block: { number: ${block} }) {
                     totalLiquidity,
                     totalShares
                 }
             }`;
 
             const y = (await balancerClient.query({query: gql(q)})).data.pools[0];
-            
-            const yCopy = JSON.parse(JSON.stringify(y));
-            yCopy.block = blocks[i];
 
             console.log('liquidity progress:', currentPage / blocks.length);
             currentPage++;
             
-            resolve(yCopy);
+            resolve({
+                block: block,
+                value: Number(y.totalLiquidity) / Number(y.totalShares)
+            });
         }));
 
         if (promises2.length === PROMISE_BATCH_SIZE) {
@@ -150,18 +156,28 @@ export async function getLiquidityForListOfBlocksBalancer(poolId: string, blocks
 }
 
 // TODO: abstract this away from main index.ts file, it should do this fetch in here
-export async function getPoolIdsFromAddresses(addresses: string[]): Promise<{[key: string]: string}> {
-    const poolIds: {[key: string]: string} = {};
+// async function getPoolIdsFromAddresses(addresses: string[]): Promise<{[key: string]: string}> {
+//     const poolIds: {[key: string]: string} = {};
     
-    await Promise.all(addresses.map(async poolAddr => {
-        const q = `{
-            pools(where: {address: "${poolAddr}"}) {
-                id
-            }
-        }`
-        const res = await balancerClient.query({query: gql(q)});
-        poolIds[poolAddr] = res.data.pools[0].id;
-    }));
+//     await Promise.all(addresses.map(async poolAddr => {
+//         const q = `{
+//             pools(where: {address: "${poolAddr}"}) {
+//                 id
+//             }
+//         }`
+//         const res = await balancerClient.query({query: gql(q)});
+//         poolIds[poolAddr] = res.data.pools[0].id;
+//     }));
 
-    return poolIds;
+//     return poolIds;
+// }
+
+async function getPoolIdFromAddress(address: string): Promise<string> {
+    const q = `{
+        pools(where: {address: "${address}"}) {
+            id
+        }
+    }`
+    const res = await balancerClient.query({query: gql(q)});
+    return res.data.pools[0].id;
 }
