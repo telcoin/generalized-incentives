@@ -62,49 +62,78 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
     return results;
 }
 
-async function getSwapsOrJoinsTsBalancer(type: string, poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number): Promise<number[]> {
-    let results: number[] = [];
-    let page = 0;
-    
+async function getDataPaginatedById<ReturnType>(
+    client: ApolloClient<NormalizedCacheObject>,
+    arrayName: string,
+    queryStringFunction: (id: string) => string,
+    processResponseFunction: (data: any) => ReturnType[]
+): Promise<ReturnType[]> {
+    let results: ReturnType[] = [];
     let lastId = "";
 
-    const poolId = await getPoolIdFromAddress(poolAddress);
-    
     while (true) {
-        const q = `{
-            ${type}(where: {pool${type === 'swaps' ? 'Id' : ''}: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${lastId}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
+        const q = queryStringFunction(lastId);
+
+        const res = await client.query({query: gql(q)});
+
+        if (res.data[arrayName].length === 0) {
+            results.sort();
+            return results;
+        }
+        
+        results = results.concat(processResponseFunction(res.data));
+
+        lastId = res.data[arrayName][res.data[arrayName].length - 1].id;
+    }
+}
+
+
+export async function getSwapsTimestampsBalancer(poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
+    let page = 0;
+    const poolId = await getBalancerPoolIdFromAddress(poolAddress);
+    
+    function createQueryString(id: string) {
+        return `{
+            swaps(where: {poolId: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${id}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
                 timestamp,
                 id
             }
         }`;
-        
-        const d = await balancerClient.query({query: gql(q)});
-        
-        
-        console.log(`${type} page:`, page);
-        page++;
-        
-        results = results.concat(d.data[type].map((x: any) => x.timestamp));
-        
-        if (d.data[type].length < pageSize) {
-            results.sort();
-            return results;
-        }
-
-        lastId = d.data[type][d.data[type].length - 1].id;
     }
-}
 
-export async function getSwapsTimestampsBalancer(poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTsBalancer('swaps', poolAddress, minTimestamp, maxTimestamp, pageSize);
+    function processResponse(data: any): number[] {
+        page++;
+        console.log(`swaps page ${page}`)
+        return data.swaps.map((x:any) => parseInt(x.timestamp));
+    }
+    
+    return getDataPaginatedById<number>(balancerClient, "swaps", createQueryString, processResponse);
 }
 
 export async function getJoinExitTimestampsBalancer(poolAddress: string, minTimestamp: string, maxTimestamp: string, pageSize: number = 100): Promise<number[]> {
-    return getSwapsOrJoinsTsBalancer('joinExits', poolAddress, minTimestamp, maxTimestamp, pageSize);
+    let page = 0;
+    const poolId = await getBalancerPoolIdFromAddress(poolAddress);
+
+    function createQueryString(id: string) {
+        return `{
+            joinExits(where: {pool: "${poolId}", timestamp_gte: ${minTimestamp}, timestamp_lt: ${maxTimestamp}, id_gt: "${id}"}, first: ${pageSize}, orderBy: id, orderDirection: asc) {
+                timestamp,
+                id
+            }
+        }`;
+    }
+
+    function processResponse(data: any): number[] {
+        page++;
+        console.log(`joinExits page ${page}`)
+        return data.joinExits.map((x:any) => parseInt(x.timestamp));
+    }
+    
+    return getDataPaginatedById<number>(balancerClient, "joinExits", createQueryString, processResponse);
 }
 
 export async function getLpTokenValueAtBlockBalancer(poolAddress: string, block: number): Promise<number> {
-    const poolId = await getPoolIdFromAddress(poolAddress);
+    const poolId = await getBalancerPoolIdFromAddress(poolAddress);
 
     const q = `{
         pools(where: {id: "${poolId}"}, block: { number: ${block} }) {
@@ -119,60 +148,60 @@ export async function getLpTokenValueAtBlockBalancer(poolAddress: string, block:
 }
 
 export async function getHistoricalLpTokenValuesBalancer(poolAddress: string, blocks: number[]): Promise<HistoricalTokenValue[]> {
-    const poolId = await getPoolIdFromAddress(poolAddress);
-    
     let currentPage = 1;
+    const poolId = await getBalancerPoolIdFromAddress(poolAddress);
+    
+    function buildQueryString(params: {[key:string]:string}): string {
+        return `{
+            pools(where: {id: "${poolId}"}, block: { number: ${params.block} }) {
+                totalLiquidity,
+                totalShares
+            }
+        }`;
+    }
 
-    let promises2: Promise<HistoricalTokenValue>[] = [];
-    let awaitedPromises: HistoricalTokenValue[] = [];
-    for (let i = 0; i < blocks.length; i++) {
-        const block = blocks[i];
-        promises2.push(new Promise(async (resolve, reject) => {
-            const q = `{
-                pools(where: {id: "${poolId}"}, block: { number: ${block} }) {
-                    totalLiquidity,
-                    totalShares
-                }
-            }`;
+    function processResponse(params: {[key:string]:string}, data: any): HistoricalTokenValue {
+        console.log('bal liq prog', currentPage / blocks.length);
+        currentPage++;
 
-            const y = (await balancerClient.query({query: gql(q)})).data.pools[0];
+        return {
+            block: Number(params.block),
+            value: Number(data.pools[0].totalLiquidity) / Number(data.pools[0].totalShares)
+        };
+    }
+    const params = blocks.map(block => {return {block: block.toString()}});
 
-            console.log('liquidity progress:', currentPage / blocks.length);
-            currentPage++;
-            
-            resolve({
-                block: block,
-                value: Number(y.totalLiquidity) / Number(y.totalShares)
-            });
+    return batchQueries(balancerClient, params, buildQueryString, processResponse);
+}
+
+async function batchQueries<ReturnType>(
+    client: ApolloClient<NormalizedCacheObject>, 
+    paramsArray: {[key:string]:string}[], 
+    queryStringFunction: (params: {[key:string]:string}) => string, 
+    processResponseFunction: (params: {[key:string]:string}, data: any) => ReturnType
+): Promise<ReturnType[]> {
+    let promises: Promise<ReturnType>[] = [];
+    let awaited: ReturnType[] = [];
+    for (let i = 0; i < paramsArray.length; i++) {
+        const p = paramsArray[i];
+        
+        promises.push(new Promise(async (resolve, reject) => {
+            const qs = queryStringFunction(p);
+            const response = await client.query({query: gql(qs)});
+
+            resolve(processResponseFunction(p, response.data));
         }));
-
-        if (promises2.length === PROMISE_BATCH_SIZE) {
-            awaitedPromises = awaitedPromises.concat(await Promise.all(promises2));
-            promises2 = [];
+        
+        if (promises.length === PROMISE_BATCH_SIZE) {
+            awaited = awaited.concat(await Promise.all(promises));
+            promises = [];
         }
     }
 
-    return awaitedPromises.concat(await Promise.all(promises2));
+    return awaited.concat(await Promise.all(promises));
 }
 
-// TODO: abstract this away from main index.ts file, it should do this fetch in here
-// async function getPoolIdsFromAddresses(addresses: string[]): Promise<{[key: string]: string}> {
-//     const poolIds: {[key: string]: string} = {};
-    
-//     await Promise.all(addresses.map(async poolAddr => {
-//         const q = `{
-//             pools(where: {address: "${poolAddr}"}) {
-//                 id
-//             }
-//         }`
-//         const res = await balancerClient.query({query: gql(q)});
-//         poolIds[poolAddr] = res.data.pools[0].id;
-//     }));
-
-//     return poolIds;
-// }
-
-async function getPoolIdFromAddress(address: string): Promise<string> {
+async function getBalancerPoolIdFromAddress(address: string): Promise<string> {
     const q = `{
         pools(where: {address: "${address}"}) {
             id

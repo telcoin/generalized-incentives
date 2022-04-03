@@ -1,10 +1,10 @@
 import fetch from "cross-fetch";
-import { AlchemyTransfersParameters, AlchemyTransfersResponse, Transfer } from "./types";
+import { AlchemyTransfersParameters, AlchemyTransfersResponse, Param, Transfer } from "./types";
 
 const KEY = process.env.ALCHEMYKEY;
 const APIURL = "https://polygon-mainnet.g.alchemy.com/v2/" + KEY;
 
-export async function getTransfers(erc20Address: string, startblock: number, endBlock: number): Promise<Transfer[]> {
+export async function getTransfers(erc20Address: string, startblock: number, endBlock: number, additionalOptions: Param = {}): Promise<Transfer[]> {
     const body = {
         "jsonrpc": "2.0",
         "id": 0,
@@ -12,7 +12,7 @@ export async function getTransfers(erc20Address: string, startblock: number, end
         "params": [
             {
                 "fromBlock": '0x' + startblock.toString(16),
-                "toBlock": '0x' + (26624585).toString(16),
+                "toBlock": '0x' + (endBlock).toString(16),
                 //   "fromAddress": "0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE",
                 "contractAddresses": [erc20Address],
                 // "maxCount": "0x5",
@@ -21,6 +21,8 @@ export async function getTransfers(erc20Address: string, startblock: number, end
             }
         ]
     } as AlchemyTransfersParameters;
+
+    body.params[0] = Object.assign(body.params[0], additionalOptions);
 
     let ans: Transfer[] = [];
 

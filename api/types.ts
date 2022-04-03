@@ -36,14 +36,15 @@ export interface AlchemyTransfersParameters {
 }
 
 export interface Param {
-    fromBlock:         string;
-    toBlock:           string;
-    fromAddress:       string;
-    contractAddresses: string[];
-    maxCount:          string;
-    excludeZeroValue:  boolean;
-    category:          string[];
-    pageKey:           string;
+    fromBlock?:         string;
+    toBlock?:           string;
+    fromAddress?:       string;
+    toAddress?:         string;
+    contractAddresses?: string[];
+    maxCount?:          string;
+    excludeZeroValue?:  boolean;
+    category?:          string[];
+    pageKey?:           string;
 }
 
 export type HistoricalTokenValue = {

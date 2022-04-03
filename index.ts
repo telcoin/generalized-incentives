@@ -26,10 +26,15 @@ const POOLS = [
         symbol: "TEL/BAL",
         address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
         protocol: "balancer"
-    }
+    },
+    // {
+    //     symbol: "TEL/QUICK",
+    //     address: "0xe88e24f49338f974b528ace10350ac4576c5c8a1".toLowerCase(),
+    //     protocol: "quickswap"
+    // }
 ];
 
-const START_BLOCK = 26548163 - 604800/20;
+const START_BLOCK = 26548163 - 604800/2;
 const END_BLOCK = 26548163;
 
 const INCENTIVES = 20000000;
@@ -119,15 +124,6 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
 
     const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
     assert(liquidityData.length === blocksOfInteraction.length);
-
-    liquidityData.sort((a, b) => {
-        return a.block - b.block;
-    })
-
-    // make sure it is in ascending block order
-    for (let i = 0; i < liquidityData.length-1; i++) {
-        assert(liquidityData[i].block <= liquidityData[i+1].block);
-    }
 
     const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
 
@@ -309,8 +305,14 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     for (let i = 0; i < POOLS.length; i++) {
         const pool = POOLS[i];
         // calculate _V
-        const _V = await calculateVBalancer(pool.address, START_BLOCK, END_BLOCK);
-        await testVBalancer(_V, pool.address, START_BLOCK, END_BLOCK);
+        let _V: number[];
+        if (pool.protocol === "balancer") {
+            _V = await calculateVBalancer(pool.address, START_BLOCK, END_BLOCK);
+            await testVBalancer(_V, pool.address, START_BLOCK, END_BLOCK);
+        }
+        else {
+            throw new Error("Invalid protocol");
+        }
     
         // calculate _S
         const _S = await calculateS(erc20TransfersByPool[pool.address], allUserAddresses);
