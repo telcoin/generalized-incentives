@@ -15,6 +15,8 @@ import { HistoricalTokenValue, Transfer } from './api/types';
 import * as graph from './api/graph';
 import { testS, testVBalancer } from './helpers/testingHelper';
 
+import * as fsAsync from 'fs/promises';
+import * as fs from 'fs';
 
 const POOLS = [
     {
@@ -34,12 +36,18 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163 - 604800/2;
-const END_BLOCK = 26548163;
+const START_BLOCK = 26548163;
+const END_BLOCK = 26548163 + 604800/20;
 
 const INCENTIVES = 20000000;
 
-const DIVERSITY_BASE_MULTIPLIER = 0.5;
+const DIVERSITY_MAX_MULTIPLIER = 1.5;
+const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 1);
+
+const TIME_BASE_MULTIPLIER = 1.05;
+const RESET_TIME = false;
+
+const TIME_MULTIPLIER_RECORDS_LOCATION = './timeMultiplierRecords'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
@@ -130,7 +138,7 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
     return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
 }
 
-async function calculateS(transfers: Transfer[], addresses: string[]) {
+function calculateS(transfers: Transfer[], addresses: string[]) {
     /*
     PLAN
 
@@ -260,7 +268,7 @@ async function createBlockMapping() {
 
 }
 
-function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math.Matrix}): {[key: string]: math.Matrix} {
+function calculateDiversityMultipliersFromYVecs(yVecPerPool: {[key: string]: math.Matrix}): {[key: string]: math.Matrix} {
     const mVecPerPool: {[key: string]: math.Matrix} = {}; // holds Mp per pool
     const pools = Object.keys(yVecPerPool);
     for (let i = 0; i < pools.length; i++) {
@@ -275,7 +283,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
             _Mp = math.add(_Mp, inner);
         }
 
-        _Mp = math.multiply(DIVERSITY_BASE_MULTIPLIER, _Mp) as math.Matrix;
+        _Mp = math.multiply(DIVERSITY_BOOST_FACTOR, _Mp) as math.Matrix;
 
         _Mp = math.add(1, _Mp) as math.Matrix;
 
@@ -283,6 +291,38 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     }
 
     return mVecPerPool;
+}
+
+function calculateTimeMultipliers(_S: number[][], addresses: string[], previousMultipliers: {[key: string]: number}): number[] {
+    const ans: number[] = [];
+    for (let i = 0; i < addresses.length; i++) {
+        const address = addresses[i];
+
+        if (previousMultipliers[address] === undefined || _S[i].indexOf(0) != -1) {
+            ans[i] = 1;
+        }
+        else {
+            ans[i] = previousMultipliers[address] * TIME_BASE_MULTIPLIER;
+        }
+    }
+    return ans;
+}
+
+function getTimeMultiplierRecordFilePath(poolAddress: string, endBlock: number): string {
+    return `${TIME_MULTIPLIER_RECORDS_LOCATION}/${poolAddress}-${endBlock}.json`
+}
+
+function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector: number[], addresses: string[]) {
+    const data: {[key: string]: number} = {};
+    for (let i = 0; i < addresses.length; i++) {
+        data[addresses[i]] = vector[i];
+    }
+
+    if (!fs.existsSync(TIME_MULTIPLIER_RECORDS_LOCATION)) {
+        fs.mkdirSync(TIME_MULTIPLIER_RECORDS_LOCATION);
+    }
+    
+    return fsAsync.writeFile(getTimeMultiplierRecordFilePath(poolAddress, endBlock), JSON.stringify(data));
 }
 
 (async () => {
@@ -301,6 +341,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
     await createBlockMapping();
 
     const yVecPerPool: {[key: string]: math.Matrix} = {};
+    const tVecPerPool: {[key: string]: math.Matrix} = {};
 
     for (let i = 0; i < POOLS.length; i++) {
         const pool = POOLS[i];
@@ -315,7 +356,7 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
         }
     
         // calculate _S
-        const _S = await calculateS(erc20TransfersByPool[pool.address], allUserAddresses);
+        const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses);
         await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
     
         // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
@@ -323,17 +364,42 @@ function calculateDiversityMultiplierFromYVecs(yVecPerPool: {[key: string]: math
         assert(_Yp.size()[0] === allUserAddresses.length);
 
         yVecPerPool[pool.address] = _Yp;
+
+        // create time multiplier vectors
+        let tVec: number[];
+
+        if (RESET_TIME) {
+            tVec = Array(allUserAddresses.length).fill(1);
+        }
+        else if (fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
+            const oldTimeMultipliers = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
+            tVec = calculateTimeMultipliers(_S, allUserAddresses, oldTimeMultipliers);
+        }
+        else {
+            tVec = Array(allUserAddresses.length).fill(1);
+            console.warn('Time multiplier data not found for last period for this pool. Either this is a new pool, or you are skipping some time');
+        }
+
+        tVecPerPool[pool.address] = math.matrix(tVec);
+
+        // save time multipliers for later runs
+        await saveTimeMultiplierRecord(pool.address, END_BLOCK, tVec, allUserAddresses);
     }
 
     // create diversity multiplier vectors
-    const dVecPerPool = calculateDiversityMultiplierFromYVecs(yVecPerPool);
+    const dVecPerPool = calculateDiversityMultipliersFromYVecs(yVecPerPool);
 
     // calculate _F (with diversity boost)
     let _F = math.zeros(Object.values(yVecPerPool)[0].size());
     for (let i = 0; i < POOLS.length; i++) {
         const _Yp = yVecPerPool[POOLS[i].address];
         const _Dp = dVecPerPool[POOLS[i].address];
-        _F = math.add(_F, math.dotMultiply(_Yp, _Dp)) as math.Matrix;
+        const _Tp = tVecPerPool[POOLS[i].address];
+
+        const YD = math.dotMultiply(_Yp, _Dp);
+        const YDT = math.dotMultiply(YD, _Tp);
+
+        _F = math.add(_F, YDT) as math.Matrix;
     }
 
     const normalizedF = math.multiply(1 / math.sum(_F), _F);
