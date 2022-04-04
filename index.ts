@@ -36,8 +36,8 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163 + 604800/20;
-const END_BLOCK = 26548163 + 2*604800/20;
+const START_BLOCK = 26548163 - 604800/2;
+const END_BLOCK = 26548163;
 
 const INCENTIVES = 20000000;
 
@@ -204,6 +204,8 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
         _S[j] = [Number(balances[addresses[j]] || 0)];
     }
 
+    process.stdout.write('filling _S matrix progress: 0%');
+
     while (i < transfers.length && parseInt(transfers[i].blockNum) < END_BLOCK) {
         const tx = transfers[i];
         const blockNo = parseInt(tx.blockNum);
@@ -223,7 +225,9 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
 
         // assert that the new column is legit
 
-        console.log(i/transfers.length);
+        process.stdout.clearLine(0);
+        process.stdout.cursorTo(0);
+        process.stdout.write(`filling _S matrix progress: ${nCols / (END_BLOCK - START_BLOCK)}`);
 
         i++;
     }
@@ -233,6 +237,7 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
         fillColumns(END_BLOCK - START_BLOCK - nCols);
     }
 
+    console.log();
 
     return _S;
 }
