@@ -13,7 +13,7 @@ import * as alchemy from './api/alchemy';
 import { HistoricalTokenValue, Transfer } from './api/types';
 
 import * as graph from './api/graph';
-import { testS, testVBalancer } from './helpers/testingHelper';
+import { testDiversity, testS, testVBalancer } from './helpers/testingHelper';
 
 import * as fsAsync from 'fs/promises';
 import * as fs from 'fs';
@@ -36,8 +36,8 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163;
-const END_BLOCK = 26548163 + 604800/20;
+const START_BLOCK = 26548163 + 604800/20;
+const END_BLOCK = 26548163 + 2*604800/20;
 
 const INCENTIVES = 20000000;
 
@@ -72,10 +72,6 @@ const TIMING = {
         end: 0
     }
 };
-
-const customFetch = fetchRetry(fetch, {
-    retries: 5
-});
 
 /////////////////////////////////////////////////////////////
 
@@ -388,6 +384,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
 
     // create diversity multiplier vectors
     const dVecPerPool = calculateDiversityMultipliersFromYVecs(yVecPerPool);
+    testDiversity(yVecPerPool, dVecPerPool, DIVERSITY_BOOST_FACTOR);
 
     // calculate _F (with diversity boost)
     let _F = math.zeros(Object.values(yVecPerPool)[0].size());

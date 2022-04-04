@@ -1,7 +1,8 @@
 // this code will test S and V matrices by randomly selecting points and checking against an external data source
 
-import { assert } from "console";
+import { assert } from "chai";
 import { ethers } from "ethers";
+import math from "mathjs";
 
 import * as graph from '../api/graph';
 
@@ -61,4 +62,34 @@ export async function testS(_S: number[][], addressList: string[], poolAddress: 
     await Promise.all(promises);
 
     console.log('_S checks done!');
+}
+
+export function testDiversity(yVecPerPool: {[key: string]: math.Matrix}, dVecPerPool: {[key: string]: math.Matrix}, B:number, nTests: number = 2000) {
+    assert(JSON.stringify(Object.keys(yVecPerPool).sort()) === JSON.stringify(Object.keys(dVecPerPool).sort()));
+    const len = Object.values(yVecPerPool)[0].toArray().length;
+
+    Object.keys(yVecPerPool).forEach(k => {
+        assert(yVecPerPool[k].toArray().length === len);
+        assert(dVecPerPool[k].toArray().length === len);
+    });
+    const pools = Object.keys(yVecPerPool);
+
+    const nPools = pools.length;
+    for (let n = 0; n < nTests; n++) {
+        const poolI = Math.floor(Math.random()*nPools);
+        const addressI = Math.floor(Math.random()*len);
+
+        let ans = 0;
+        for (let i = 0; i < nPools; i++) {
+            if (i === poolI) continue;
+            const other = yVecPerPool[pools[i]].toArray() as number[];
+            const thisOne = yVecPerPool[pools[poolI]].toArray() as number[];
+            if (other[addressI] !== 0 && thisOne[addressI] !== 0) {
+                ans += Math.min(other[addressI]/thisOne[addressI], 1);
+            }
+        }
+
+        const dvec = dVecPerPool[pools[poolI]].toArray() as number[];
+        assert(ans*B+1 === dvec[addressI]);
+    }
 }
