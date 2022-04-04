@@ -2,7 +2,7 @@ import fetch from "cross-fetch";
 import fetchRetry from "fetch-retry";
 import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject, ApolloQueryResult, gql } from "@apollo/client";
 import { HistoricalTokenValue } from "./types";
-import { shortenAddress } from "../helpers/misc";
+import { consoleReplaceLine, decimalToPercent, shortenAddress } from "../helpers/misc";
 
 const customFetch = fetchRetry(fetch, {
     retries: 5
@@ -33,6 +33,10 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
     let currentPage = 1;
     const numPages = Math.ceil((end - start + 1)/pageSize);
     
+    let lastPct = 0;
+    
+    process.stdout.write('fetch blocks progress: 0%');
+
     for (let a = start; a <= end; a += pageSize) {
         const q = `{
             blocks(where: {number_gte: ${a}, number_lt: ${a+pageSize}}, orderBy: number, orderDirection: asc) {
@@ -43,11 +47,14 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
 
         promises.push(new Promise(async (resolve, reject) => {
             const y = await blocksClient.query({query: gql(q)});
-            if (currentPage > 1) {
-                process.stdout.clearLine(0);
+            
+            const currPct = decimalToPercent(currentPage / numPages);
+            
+            if (currPct > lastPct) {
+                consoleReplaceLine(`fetch blocks progress: ${currPct}%`);
+                lastPct = currPct;
             }
-            process.stdout.cursorTo(0);
-            process.stdout.write('fetch blocks progress: ' + currentPage / numPages);
+
             currentPage++;
             resolve(y);
         }));
@@ -111,14 +118,12 @@ export async function getSwapsTimestampsBalancer(poolAddress: string, minTimesta
 
     function processResponse(data: any): number[] {
         page++;
-        if (page > 1) {
-            process.stdout.clearLine(0);
-        }
-        process.stdout.cursorTo(0);
-        process.stdout.write(`fetch swaps for ${shortenedAddress} page: ${page}/?`)
+        consoleReplaceLine(`fetch swaps for ${shortenedAddress} page: ${page}/?`);
         return data.swaps.map((x:any) => parseInt(x.timestamp));
     }
     
+    process.stdout.write(`fetch swaps for ${shortenedAddress} page: 0/?`)
+
     const result = await getDataPaginatedById<number>(balancerClient, "swaps", createQueryString, processResponse);
     console.log();
     return result;
@@ -140,14 +145,12 @@ export async function getJoinExitTimestampsBalancer(poolAddress: string, minTime
 
     function processResponse(data: any): number[] {
         page++;
-        if (page > 1) {
-            process.stdout.clearLine(0);
-        }
-        process.stdout.cursorTo(0);
-        process.stdout.write(`fetch joins/exits for ${shortenedAddress} page: ${page}/?`)
+        consoleReplaceLine(`fetch joins/exits for ${shortenedAddress} page: ${page}/?`);
         return data.joinExits.map((x:any) => parseInt(x.timestamp));
     }
     
+    process.stdout.write(`fetch joins/exits for ${shortenedAddress} page: 0/?`);
+
     const result = await getDataPaginatedById<number>(balancerClient, "joinExits", createQueryString, processResponse);
     console.log();
     return result;
@@ -182,12 +185,13 @@ export async function getHistoricalLpTokenValuesBalancer(poolAddress: string, bl
         }`;
     }
 
+    let lastPct = 0;
     function processResponse(params: {[key:string]:string}, data: any): HistoricalTokenValue {
-        if (currentPage > 1) {
-            process.stdout.clearLine(0);
+        const currPct = decimalToPercent(currentPage / blocks.length);
+        if (currPct > lastPct) {
+            consoleReplaceLine(`fetch liquidity for ${shortenedAddress} progress: ${currPct}%`);
+            lastPct = currPct;
         }
-        process.stdout.cursorTo(0);
-        process.stdout.write(`fetch liquidity for ${shortenedAddress} progress: ${currentPage / blocks.length}`);
         currentPage++;
 
         return {
@@ -196,6 +200,8 @@ export async function getHistoricalLpTokenValuesBalancer(poolAddress: string, bl
         };
     }
     const params = blocks.map(block => {return {block: block.toString()}});
+
+    process.stdout.write(`fetch liquidity for ${shortenedAddress} progress: 0%`);
 
     const result = await batchQueries(balancerClient, params, buildQueryString, processResponse);
     console.log();

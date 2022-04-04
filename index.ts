@@ -17,6 +17,7 @@ import { testDiversity, testS, testVBalancer } from './helpers/testingHelper';
 
 import * as fsAsync from 'fs/promises';
 import * as fs from 'fs';
+import { consoleReplaceLine, decimalToPercent } from './helpers/misc';
 
 const POOLS = [
     {
@@ -206,6 +207,7 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
 
     process.stdout.write('filling _S matrix progress: 0%');
 
+    let lastPct = 0;
     while (i < transfers.length && parseInt(transfers[i].blockNum) < END_BLOCK) {
         const tx = transfers[i];
         const blockNo = parseInt(tx.blockNum);
@@ -217,18 +219,17 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
             fillColumns(blockNo - START_BLOCK - nCols);
         }
 
-        // finally, add a new column with current balances
-
         for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
             _S[iAddr].push(Number(balances[addresses[iAddr]] || 0));
         }
 
-        // assert that the new column is legit
-
-        process.stdout.clearLine(0);
-        process.stdout.cursorTo(0);
-        process.stdout.write(`filling _S matrix progress: ${nCols / (END_BLOCK - START_BLOCK)}`);
-
+        // log progress
+        const currPct = decimalToPercent(nCols / (END_BLOCK - START_BLOCK));
+        if (currPct > lastPct) {
+            consoleReplaceLine(`filling _S matrix progress: ${currPct}%`);
+            lastPct = currPct;
+        }
+            
         i++;
     }
 
@@ -237,7 +238,7 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
         fillColumns(END_BLOCK - START_BLOCK - nCols);
     }
 
-    console.log();
+    consoleReplaceLine(`filling _S matrix progress: 100%\n`);
 
     return _S;
 }
