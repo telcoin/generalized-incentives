@@ -86,7 +86,7 @@ function calculateVFromData(liquidityData: HistoricalTokenValue[], liquidityValu
         assert(liquidityData[i].block <= liquidityData[i+1].block);
     }
 
-    // fill in V - this is the vector of liquidity share value at each block, where the index is the block - START_BLOCK
+    // fill in V - this is the vector of liquidity share value at each block, where the index is (block - START_BLOCK)
     let _V: number[] = [];
 
     _V = Array(liquidityData[0].block - startBlock).fill(liquidityValueAtStartBlock);
@@ -127,6 +127,7 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
     // remove potential duplicates
     blocksOfInteraction = [...new Set(blocksOfInteraction)];
 
+    // get value of 1 LP token at each block where there is a swap, join, or exit
     const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
     assert(liquidityData.length === blocksOfInteraction.length);
 
@@ -135,7 +136,7 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
     return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
 }
 
-function calculateS(transfers: Transfer[], addresses: string[]) {
+function calculateS(transfers: Transfer[], addresses: string[], startBlock: number, endBlock: number) {
     /*
     PLAN
 
@@ -177,7 +178,7 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
     }
     
     let i = 0;
-    while (parseInt(transfers[i].blockNum) <= START_BLOCK) {
+    while (parseInt(transfers[i].blockNum) <= startBlock) {
         const tx = transfers[i];
         updateBalances(tx);
         i++;
@@ -208,15 +209,15 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
     process.stdout.write('filling _S matrix progress: 0%');
 
     let lastPct = 0;
-    while (i < transfers.length && parseInt(transfers[i].blockNum) < END_BLOCK) {
+    while (i < transfers.length && parseInt(transfers[i].blockNum) < endBlock) {
         const tx = transfers[i];
         const blockNo = parseInt(tx.blockNum);
         
         updateBalances(tx);
 
         const nCols = _S[0].length;
-        if (blockNo - START_BLOCK > nCols) {
-            fillColumns(blockNo - START_BLOCK - nCols);
+        if (blockNo - startBlock > nCols) {
+            fillColumns(blockNo - startBlock - nCols);
         }
 
         for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
@@ -224,7 +225,7 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
         }
 
         // log progress
-        const currPct = decimalToPercent(nCols / (END_BLOCK - START_BLOCK));
+        const currPct = decimalToPercent(nCols / (endBlock - startBlock));
         if (currPct > lastPct) {
             consoleReplaceLine(`filling _S matrix progress: ${currPct}%`);
             lastPct = currPct;
@@ -234,8 +235,8 @@ function calculateS(transfers: Transfer[], addresses: string[]) {
     }
 
     const nCols = _S[0].length;
-    if (END_BLOCK - START_BLOCK > nCols) {
-        fillColumns(END_BLOCK - START_BLOCK - nCols);
+    if (endBlock - startBlock > nCols) {
+        fillColumns(endBlock - startBlock - nCols);
     }
 
     consoleReplaceLine(`filling _S matrix progress: 100%\n`);
@@ -260,8 +261,8 @@ function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     return addrs;
 }
 
-async function createBlockMapping() {
-    const blocks = await graph.getBlocks(START_BLOCK, END_BLOCK);  
+async function createBlockMapping(startBlock: number, endBlock: number) {
+    const blocks = await graph.getBlocks(startBlock, endBlock);  
 
     blocks.forEach(x => {
         blockTimestampToNumber[x.timestamp] = x.number;
@@ -340,7 +341,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
 
     // create mapping between block timestamp and number
-    await createBlockMapping();
+    await createBlockMapping(START_BLOCK, END_BLOCK);
 
     const yVecPerPool: {[key: string]: math.Matrix} = {};
     const tVecPerPool: {[key: string]: math.Matrix} = {};
@@ -358,7 +359,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
         }
     
         // calculate _S
-        const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses);
+        const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
         await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
     
         // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
@@ -367,7 +368,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
 
         yVecPerPool[pool.address] = _Yp;
 
-        // create time multiplier vectors
+        // create time multiplier vector
         let tVec: number[];
 
         if (RESET_TIME) {
@@ -392,7 +393,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
     const dVecPerPool = calculateDiversityMultipliersFromYVecs(yVecPerPool);
     testDiversity(yVecPerPool, dVecPerPool, DIVERSITY_BOOST_FACTOR);
 
-    // calculate _F (with diversity boost)
+    // calculate _F (with diversity and time boosts)
     let _F = math.zeros(Object.values(yVecPerPool)[0].size());
     for (let i = 0; i < POOLS.length; i++) {
         const _Yp = yVecPerPool[POOLS[i].address];
@@ -411,6 +412,4 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
     console.log('filling data took', TIMING.fillingData.total);
 
     console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
-
-    // idea for diversity multiplier: for each pool A, go through each other pool B. the multiplier on A is SUM( max(1, Yb/Ya)*1.5 ) over B
 })();
