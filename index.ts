@@ -17,7 +17,7 @@ import { testDiversity, testS, testVBalancer } from './helpers/testingHelper';
 
 import * as fsAsync from 'fs/promises';
 import * as fs from 'fs';
-import { consoleReplaceLine, decimalToPercent } from './helpers/misc';
+import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers/misc';
 
 const POOLS = [
     {
@@ -37,10 +37,11 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163 + 2*604800/20;
-const END_BLOCK = 26548163 + 3*604800/20;
+const START_BLOCK = 26548163;
+const END_BLOCK = 26548163 + 604800/20;
 
 const INCENTIVES = 20000000;
+const DECIMALS = 2;
 
 const DIVERSITY_MAX_MULTIPLIER = 1.5;
 const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 1);
@@ -48,7 +49,8 @@ const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 
 const TIME_BASE_MULTIPLIER = 1.05;
 const RESET_TIME = false;
 
-const TIME_MULTIPLIER_RECORDS_LOCATION = './timeMultiplierRecords'
+const TIME_MULTIPLIER_RECORDS_DIRECTORY = './timeMultiplierRecords';
+const REPORTS_DIRECTORY = './reports';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
@@ -391,15 +393,34 @@ function generateFreshTimeMultiplierStacks(_S: number[][], addresses: string[]):
 }
 
 function getTimeMultiplierRecordFilePath(poolAddress: string, endBlock: number): string {
-    return `${TIME_MULTIPLIER_RECORDS_LOCATION}/${poolAddress}-${endBlock}.json`
+    return `${TIME_MULTIPLIER_RECORDS_DIRECTORY}/${poolAddress}-${endBlock}.json`
 }
 
 function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, stacks: TimeDataStackMapping) {
-    if (!fs.existsSync(TIME_MULTIPLIER_RECORDS_LOCATION)) {
-        fs.mkdirSync(TIME_MULTIPLIER_RECORDS_LOCATION);
+    if (!fs.existsSync(TIME_MULTIPLIER_RECORDS_DIRECTORY)) {
+        fs.mkdirSync(TIME_MULTIPLIER_RECORDS_DIRECTORY);
     }
     
     return fsAsync.writeFile(getTimeMultiplierRecordFilePath(poolAddress, endBlock), JSON.stringify(stacks));
+}
+
+function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBlock: number, endBlock: number) {
+    assert(payoutMatrix.size().length === 1 && payoutMatrix.size()[0] === userAddresses.length);
+    const payoutArray = payoutMatrix.toArray() as number[];
+
+    let s = '';
+    for (let i = 0; i < userAddresses.length; i++) {
+        const trunced = truncateDecimal(payoutArray[i], DECIMALS);
+        if (trunced > 0) {
+            s += `${userAddresses[i]},${trunced}\n`;
+        }
+    }
+
+    if (!fs.existsSync(REPORTS_DIRECTORY)) {
+        fs.mkdirSync(REPORTS_DIRECTORY);
+    }
+
+    return fsAsync.writeFile(`${REPORTS_DIRECTORY}/${startBlock}-${endBlock}.csv`, s);
 }
 
 (async () => {
@@ -481,11 +502,11 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, stacks:
     }
 
     const normalizedF = math.multiply(1 / math.sum(_F), _F) as math.Matrix;
-    assert(math.sum(normalizedF) === 1);
+    assert(Math.abs(math.sum(normalizedF) - 1) < 1e-8);
 
     const calculatedIncentives = math.multiply(INCENTIVES, normalizedF) as math.Matrix;
-    
-    console.log('filling data took', TIMING.fillingData.total);
 
+    await writeReport(calculatedIncentives, allUserAddresses, START_BLOCK, END_BLOCK);
+    
     console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
 })();

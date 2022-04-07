@@ -6,6 +6,11 @@ export function decimalToPercent(d: number): number {
     return Math.floor(d*100);
 }
 
+export function truncateDecimal(d: number, points: number): number {
+    const x = Math.pow(10, points)
+    return Math.floor(d * x) / x;
+}
+
 export function consoleReplaceLine(s: string) {
     process.stdout.clearLine(0);
     process.stdout.cursorTo(0);
