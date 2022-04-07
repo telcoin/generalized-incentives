@@ -28,8 +28,6 @@ export async function testVBalancer(_V: number[], poolAddress: string, startBloc
     }
 
     await Promise.all(promises);
-
-    console.log("_V checks done!");
 }
 
 export async function testS(_S: number[][], addressList: string[], poolAddress: string, startBlock: number, endBlock: number, nTests: number = 100) {
@@ -60,8 +58,6 @@ export async function testS(_S: number[][], addressList: string[], poolAddress: 
     }
     
     await Promise.all(promises);
-
-    console.log('_S checks done!');
 }
 
 export function testDiversity(yVecPerPool: {[key: string]: math.Matrix}, dVecPerPool: {[key: string]: math.Matrix}, B:number, nTests: number = 2000) {

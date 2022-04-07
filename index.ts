@@ -430,7 +430,9 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
     TIMING.scriptStart = Date.now();
 
     // get all erc20 transfer data
+    process.stdout.write('Fetching LP token transfers...');
     const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS.map(p => p.address), 0, END_BLOCK);
+    process.stdout.write('Done!\n');
 
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));

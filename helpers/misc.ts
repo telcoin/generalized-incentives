@@ -1,5 +1,6 @@
-export function shortenAddress(address: string): string {
-    return address.substring(0, 6) + '...' + address.substring(address.length - 4);
+export function shortenAddress(address: string, caps: boolean = true): string {
+    const x = address.substring(2, 6) + '..' + address.substring(address.length - 4);
+    return '0x'+ (caps ? x.toUpperCase() : x.toLowerCase());
 }
 
 export function decimalToPercent(d: number): number {
