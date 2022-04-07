@@ -37,8 +37,8 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163 - 604800/2;
-const END_BLOCK = 26548163;
+const START_BLOCK = 26548163 + 2*604800/20;
+const END_BLOCK = 26548163 + 3*604800/20;
 
 const INCENTIVES = 20000000;
 
@@ -52,8 +52,15 @@ const TIME_MULTIPLIER_RECORDS_LOCATION = './timeMultiplierRecords'
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-const blockTimestampToNumber: {[key: string]: string} = {}
-const blockNumberToTimestamp: {[key: string]: string} = {}
+const blockTimestampToNumber: {[key: string]: string} = {};
+const blockNumberToTimestamp: {[key: string]: string} = {};
+
+type TimeDataStack = {
+    amount: number,
+    multiplier: number
+}[];
+
+type TimeDataStackMapping = {[key: string]: TimeDataStack};
 
 const TIMING = {
     scriptStart: 0,
@@ -296,17 +303,89 @@ function calculateDiversityMultipliersFromYVecs(yVecPerPool: {[key: string]: mat
     return mVecPerPool;
 }
 
-function calculateTimeMultipliers(_S: number[][], addresses: string[], previousMultipliers: {[key: string]: number}): number[] {
+function calculateTimeMultipliers(_S: number[][], addresses: string[], oldStacks: TimeDataStackMapping): [number[], TimeDataStackMapping] {
+    // NOTE: ROUNDING ERROR BIG NUMBER!
+
+    const newStacks: TimeDataStackMapping = {};
     const ans: number[] = [];
+
     for (let i = 0; i < addresses.length; i++) {
         const address = addresses[i];
+        let newStackOfUser: TimeDataStack;
+        let previousLpBalance = 0;
 
-        if (previousMultipliers[address] === undefined || _S[i].indexOf(0) != -1) {
-            ans[i] = 1;
+        if (oldStacks[address] === undefined) {
+            newStackOfUser = [];
         }
         else {
-            ans[i] = previousMultipliers[address] * TIME_BASE_MULTIPLIER;
+            newStackOfUser = oldStacks[address].map(e => {
+                return {
+                    amount: e.amount,
+                    multiplier: e.multiplier*TIME_BASE_MULTIPLIER
+                }
+            });
+
+            previousLpBalance = oldStacks[address].reduce((prev, curr) => prev + curr.amount, 0);
         }
+        
+
+        const _SRow = _S[i];
+
+        for (let j = 0; j < _SRow.length; j++) {
+            const currentLpBalance = _SRow[j];
+            
+            if (currentLpBalance > previousLpBalance) {
+                // user deposited
+                // add to stack
+                // newStackOfUser.push([currentLpBalance - previousLpBalance, 1]);
+                newStackOfUser.push({
+                    amount: currentLpBalance - previousLpBalance,
+                    multiplier: 1
+                });
+            }
+            else if (currentLpBalance < previousLpBalance) {
+                // user withdrew
+                // work down the stack
+                let amountToSubtract = previousLpBalance - currentLpBalance;
+                while (amountToSubtract > 0) {
+                    const topElement = newStackOfUser[newStackOfUser.length - 1];
+                    const topElementAmount = topElement.amount;
+                    
+                    if (topElementAmount <= amountToSubtract) {
+                        newStackOfUser.pop();
+                    }
+                    else {
+                        topElement.amount -= amountToSubtract;
+                        break; // redundant
+                    }
+
+                    amountToSubtract -= topElementAmount;
+                }
+            }
+
+            previousLpBalance = currentLpBalance;
+        }
+
+        newStacks[address] = newStackOfUser;
+
+        const multiplierForThisUser =  _SRow[_SRow.length - 1] === 0 ? 0 : newStackOfUser.reduce((prev, curr) => prev + curr.amount*curr.multiplier, 0) / _SRow[_SRow.length - 1];
+
+        assert(_SRow[_SRow.length - 1] === newStackOfUser.reduce((prev, curr) => prev + curr.amount, 0));
+        assert(multiplierForThisUser === 0 || multiplierForThisUser >= 1);
+
+        ans.push(Math.max(1, multiplierForThisUser));
+    }
+
+    return [ans, newStacks];
+}
+
+function generateFreshTimeMultiplierStacks(_S: number[][], addresses: string[]): TimeDataStackMapping {
+    const ans: {[key: string]: TimeDataStack} = {};
+    for (let i = 0; i < addresses.length; i++) {
+        ans[addresses[i]] = [{
+            amount: _S[i][_S[i].length - 1],
+            multiplier: 1
+        }];
     }
     return ans;
 }
@@ -315,17 +394,12 @@ function getTimeMultiplierRecordFilePath(poolAddress: string, endBlock: number):
     return `${TIME_MULTIPLIER_RECORDS_LOCATION}/${poolAddress}-${endBlock}.json`
 }
 
-function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector: number[], addresses: string[]) {
-    const data: {[key: string]: number} = {};
-    for (let i = 0; i < addresses.length; i++) {
-        data[addresses[i]] = vector[i];
-    }
-
+function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, stacks: TimeDataStackMapping) {
     if (!fs.existsSync(TIME_MULTIPLIER_RECORDS_LOCATION)) {
         fs.mkdirSync(TIME_MULTIPLIER_RECORDS_LOCATION);
     }
     
-    return fsAsync.writeFile(getTimeMultiplierRecordFilePath(poolAddress, endBlock), JSON.stringify(data));
+    return fsAsync.writeFile(getTimeMultiplierRecordFilePath(poolAddress, endBlock), JSON.stringify(stacks));
 }
 
 (async () => {
@@ -370,23 +444,23 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
 
         // create time multiplier vector
         let tVec: number[];
+        let newStacks: TimeDataStackMapping;
 
-        if (RESET_TIME) {
-            tVec = Array(allUserAddresses.length).fill(1);
-        }
-        else if (fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
-            const oldTimeMultipliers = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
-            tVec = calculateTimeMultipliers(_S, allUserAddresses, oldTimeMultipliers);
+        if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
+            // we're using records from the previous run 
+            const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
+            [tVec, newStacks] = calculateTimeMultipliers(_S, allUserAddresses, oldStacks);
         }
         else {
+            console.warn('Not using old time multiplier data.');
             tVec = Array(allUserAddresses.length).fill(1);
-            console.warn('Time multiplier data not found for last period for this pool. Either this is a new pool, or you are skipping some time');
+            newStacks = generateFreshTimeMultiplierStacks(_S, allUserAddresses);
         }
 
         tVecPerPool[pool.address] = math.matrix(tVec);
 
         // save time multipliers for later runs
-        await saveTimeMultiplierRecord(pool.address, END_BLOCK, tVec, allUserAddresses);
+        await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
     }
 
     // create diversity multiplier vectors
@@ -406,7 +480,9 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, vector:
         _F = math.add(_F, YDT) as math.Matrix;
     }
 
-    const normalizedF = math.multiply(1 / math.sum(_F), _F);
+    const normalizedF = math.multiply(1 / math.sum(_F), _F) as math.Matrix;
+    assert(math.sum(normalizedF) === 1);
+
     const calculatedIncentives = math.multiply(INCENTIVES, normalizedF) as math.Matrix;
     
     console.log('filling data took', TIMING.fillingData.total);
