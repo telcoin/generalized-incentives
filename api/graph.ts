@@ -46,7 +46,7 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
         }`;
 
         promises.push(new Promise(async (resolve, reject) => {
-            const y = await blocksClient.query({query: gql(q)});
+            const y = await blocksClient.query({query: gql(q), fetchPolicy: 'no-cache'});
             
             const currPct = decimalToPercent(currentPage / numPages);
             
@@ -88,7 +88,7 @@ async function getDataPaginatedById<ReturnType>(
     while (true) {
         const q = queryStringFunction(lastId);
 
-        const res = await client.query({query: gql(q)});
+        const res = await client.query({query: gql(q), fetchPolicy: 'no-cache'});
 
         if (res.data[arrayName].length === 0) {
             results.sort();
@@ -166,7 +166,7 @@ export async function getLpTokenValueAtBlockBalancer(poolAddress: string, block:
         }
     }`;
 
-    const y = (await balancerClient.query({query: gql(q)})).data.pools[0];
+    const y = (await balancerClient.query({query: gql(q), fetchPolicy: 'no-cache'})).data.pools[0];
     
     return Number(y.totalLiquidity) / Number(y.totalShares);
 }
@@ -221,7 +221,7 @@ async function batchQueries<ReturnType>(
         
         promises.push(new Promise(async (resolve, reject) => {
             const qs = queryStringFunction(p);
-            const response = await client.query({query: gql(qs)});
+            const response = await client.query({query: gql(qs), fetchPolicy: 'no-cache'});
 
             resolve(processResponseFunction(p, response.data));
         }));
@@ -241,6 +241,6 @@ async function getBalancerPoolIdFromAddress(address: string): Promise<string> {
             id
         }
     }`
-    const res = await balancerClient.query({query: gql(q)});
+    const res = await balancerClient.query({query: gql(q), fetchPolicy: 'no-cache'});
     return res.data.pools[0].id;
 }
