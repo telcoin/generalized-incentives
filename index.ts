@@ -30,21 +30,21 @@ const POOLS = [
         address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
         protocol: "balancer"
     },
-    {
-        symbol: "LINK/BAL/WETH/AAVE",
-        address: "0xce66904B68f1f070332Cbc631DE7ee98B650b499".toLowerCase(),
-        protocol: "balancer"
-    },
-    {
-        symbol: "USDC/LINK/BAL/WETH/AAVE",
-        address: "0x36128D5436d2d70cab39C9AF9CcE146C38554ff0".toLowerCase(),
-        protocol: "balancer"
-    },
-    {
-        symbol: "blah",
-        address: "0x0297e37f1873D2DAb4487Aa67cD56B58E2F27875".toLowerCase(),
-        protocol: "balancer"
-    }
+    // {
+    //     symbol: "LINK/BAL/WETH/AAVE",
+    //     address: "0xce66904B68f1f070332Cbc631DE7ee98B650b499".toLowerCase(),
+    //     protocol: "balancer"
+    // },
+    // {
+    //     symbol: "USDC/LINK/BAL/WETH/AAVE",
+    //     address: "0x36128D5436d2d70cab39C9AF9CcE146C38554ff0".toLowerCase(),
+    //     protocol: "balancer"
+    // },
+    // {
+    //     symbol: "blah",
+    //     address: "0x0297e37f1873D2DAb4487Aa67cD56B58E2F27875".toLowerCase(),
+    //     protocol: "balancer"
+    // }
     // {
     //     symbol: "TEL/QUICK",
     //     address: "0xe88e24f49338f974b528ace10350ac4576c5c8a1".toLowerCase(),
@@ -53,7 +53,7 @@ const POOLS = [
 ];
 
 const START_BLOCK = 26548163;
-const END_BLOCK = 26548163 + 604800/2;
+const END_BLOCK = 26548163 + 604800/20;
 
 const INCENTIVES = 20000000;
 const DECIMALS = 2;
@@ -159,6 +159,106 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
 
     return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
 }
+
+function groupTransfersByAddress(transfers: Transfer[]) {
+    const result: {[key:string]: Transfer[]} = {};
+    
+    transfers.forEach(tx => {
+        const from = tx.from.toLowerCase();
+        const to = tx.to.toLowerCase();
+
+        if (result[from] === undefined) result[from] = [];
+        if (result[to] === undefined) result[to] = [];
+
+        result[from].push(tx);
+        result[to].push(tx);
+    });
+
+    return result;
+}
+
+function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: string[], startBlock: number, endBlock: number): math.Matrix {
+    function extendArray(arr: number[], val: number, n: number) {
+        for (let i = 0; i < n; i++) {
+            arr.push(val);
+        }
+    }
+
+
+    const _Yp: number[] = [];
+    const groupedTransfers = groupTransfersByAddress(transfers);
+
+    let progress = 0;
+    process.stdout.write(`Yp calculation progress: 0/${allUserAddresses.length}`);
+    
+    allUserAddresses.forEach(address => {
+        progress++;
+        address = address.toLowerCase();
+        const relevantTransfers = groupedTransfers[address];
+
+        if (relevantTransfers === undefined) {
+            // this address hasn't participated in this pool
+            _Yp.push(0);
+            return;
+        }
+
+        let balance = ethers.BigNumber.from('0');
+
+        let i = 0;
+        while (i < relevantTransfers.length && parseInt(relevantTransfers[i].blockNum) <= startBlock) {
+            const tx = relevantTransfers[i];
+            const from = tx.from.toLowerCase();
+            const to = tx.to.toLowerCase();
+            const value = ethers.BigNumber.from(tx.rawContract.value);
+
+            if (from === address) {
+                balance = balance.sub(value);
+                assert(balance.gte('0'));
+            }
+
+            if (to === address) {
+                balance = balance.add(value);
+            }
+
+            i++;
+        }
+
+        const _SRow: number[] = [Number(balance)];
+
+        while (i < relevantTransfers.length && parseInt(relevantTransfers[i].blockNum) < endBlock) {
+            const tx = relevantTransfers[i];
+            const from = tx.from.toLowerCase();
+            const to = tx.to.toLowerCase();
+            const value = ethers.BigNumber.from(tx.rawContract.value);
+            const blockNum = parseInt(tx.blockNum);
+
+            extendArray(_SRow, Number(balance), blockNum - startBlock - _SRow.length);
+
+            if (from === address) {
+                balance = balance.sub(value);
+                assert(balance.gte('0'));
+            }
+            if (to === address) {
+                balance = balance.add(value);
+            }
+
+            i++;
+        }
+
+        extendArray(_SRow, Number(balance), endBlock - startBlock - _SRow.length);
+
+        const yp = math.multiply(math.matrix(_SRow) as math.MathType, math.matrix(_V)) as number;
+        
+        _Yp.push(yp);
+
+        consoleReplaceLine(`Yp calculation progress: ${progress}/${allUserAddresses.length}`);
+    });
+
+    consoleReplaceLine(`Yp calculation progress: ${progress}/${allUserAddresses.length}\n`);
+
+    return math.matrix(_Yp);
+}
+
 
 function calculateS(transfers: Transfer[], addresses: string[], startBlock: number, endBlock: number) {
     /*
@@ -469,36 +569,40 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
         else {
             throw new Error("Invalid protocol");
         }
+
+        const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
+        fs.writeFileSync('./foo', JSON.stringify(_Yp));
+        process.exit();
     
-        // calculate _S
-        const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
-        await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
+        // // calculate _S
+        // const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
+        // await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
     
-        // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
-        const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
-        assert(_Yp.size()[0] === allUserAddresses.length);
+        // // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
+        // const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
+        // assert(_Yp.size()[0] === allUserAddresses.length);
 
         yVecPerPool[pool.address] = _Yp;
 
         // create time multiplier vector
-        let tVec: number[];
-        let newStacks: TimeDataStackMapping;
+        // let tVec: number[];
+        // let newStacks: TimeDataStackMapping;
 
-        if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
-            // we're using records from the previous run 
-            const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
-            [tVec, newStacks] = calculateTimeMultipliers(_S, allUserAddresses, oldStacks);
-        }
-        else {
-            console.warn('Not using old time multiplier data.');
-            tVec = Array(allUserAddresses.length).fill(1);
-            newStacks = generateFreshTimeMultiplierStacks(_S, allUserAddresses);
-        }
+        // if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
+        //     // we're using records from the previous run 
+        //     const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
+        //     [tVec, newStacks] = calculateTimeMultipliers(_S, allUserAddresses, oldStacks);
+        // }
+        // else {
+        //     console.warn('Not using old time multiplier data.');
+        //     tVec = Array(allUserAddresses.length).fill(1);
+        //     newStacks = generateFreshTimeMultiplierStacks(_S, allUserAddresses);
+        // }
 
-        tVecPerPool[pool.address] = math.matrix(tVec);
+        tVecPerPool[pool.address] = math.ones([allUserAddresses.length]) as math.Matrix;
 
         // save time multipliers for later runs
-        await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
+        // await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
     }
 
     // create diversity multiplier vectors

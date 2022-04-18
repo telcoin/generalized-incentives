@@ -11,7 +11,7 @@ const customFetch = fetchRetry(fetch, {
 const BALANCERAPIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
 const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
 
-const PROMISE_BATCH_SIZE = 150;
+const PROMISE_BATCH_SIZE = 100;
 
 
 // create graphql clients
