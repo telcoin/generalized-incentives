@@ -52,8 +52,8 @@ const POOLS = [
     // }
 ];
 
-const START_BLOCK = 26548163;
-const END_BLOCK = 26548163 + 604800/20;
+const START_BLOCK = 26548163 + 1*604800/20;
+const END_BLOCK = 26548163 + 2*604800/20;
 
 const INCENTIVES = 20000000;
 const DECIMALS = 2;
@@ -61,7 +61,7 @@ const DECIMALS = 2;
 const DIVERSITY_MAX_MULTIPLIER = 1.5;
 const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 1);
 
-const TIME_BASE_MULTIPLIER = 1.05;
+const TIME_BASE_MULTIPLIER = 2;
 const RESET_TIME = false;
 
 const TIME_MULTIPLIER_RECORDS_DIRECTORY = './timeMultiplierRecords';
@@ -73,7 +73,7 @@ const blockTimestampToNumber: {[key: string]: string} = {};
 const blockNumberToTimestamp: {[key: string]: string} = {};
 
 type TimeDataStack = {
-    amount: number,
+    amount: ethers.BigNumber,
     multiplier: number
 }[];
 
@@ -164,14 +164,11 @@ function groupTransfersByAddress(transfers: Transfer[]) {
     const result: {[key:string]: Transfer[]} = {};
     
     transfers.forEach(tx => {
-        const from = tx.from.toLowerCase();
-        const to = tx.to.toLowerCase();
+        if (result[tx.from] === undefined) result[tx.from] = [];
+        if (result[tx.to] === undefined) result[tx.to] = [];
 
-        if (result[from] === undefined) result[from] = [];
-        if (result[to] === undefined) result[to] = [];
-
-        result[from].push(tx);
-        result[to].push(tx);
+        result[tx.from].push(tx);
+        result[tx.to].push(tx);
     });
 
     return result;
@@ -193,7 +190,6 @@ function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: stri
     
     allUserAddresses.forEach(address => {
         progress++;
-        address = address.toLowerCase();
         const relevantTransfers = groupedTransfers[address];
 
         if (relevantTransfers === undefined) {
@@ -207,16 +203,14 @@ function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: stri
         let i = 0;
         while (i < relevantTransfers.length && parseInt(relevantTransfers[i].blockNum) <= startBlock) {
             const tx = relevantTransfers[i];
-            const from = tx.from.toLowerCase();
-            const to = tx.to.toLowerCase();
             const value = ethers.BigNumber.from(tx.rawContract.value);
 
-            if (from === address) {
+            if (tx.from === address) {
                 balance = balance.sub(value);
                 assert(balance.gte('0'));
             }
 
-            if (to === address) {
+            if (tx.to === address) {
                 balance = balance.add(value);
             }
 
@@ -227,18 +221,16 @@ function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: stri
 
         while (i < relevantTransfers.length && parseInt(relevantTransfers[i].blockNum) < endBlock) {
             const tx = relevantTransfers[i];
-            const from = tx.from.toLowerCase();
-            const to = tx.to.toLowerCase();
             const value = ethers.BigNumber.from(tx.rawContract.value);
             const blockNum = parseInt(tx.blockNum);
 
             extendArray(_SRow, Number(balance), blockNum - startBlock - _SRow.length);
 
-            if (from === address) {
+            if (tx.from === address) {
                 balance = balance.sub(value);
                 assert(balance.gte('0'));
             }
-            if (to === address) {
+            if (tx.to === address) {
                 balance = balance.add(value);
             }
 
@@ -280,24 +272,22 @@ function calculateS(transfers: Transfer[], addresses: string[], startBlock: numb
     const balances: {[key: string]: ethers.BigNumber} = {};
 
     function updateBalances(tx: Transfer) {
-        const from = tx.from.toLowerCase();
-        const to = tx.to.toLowerCase();
         const value = ethers.BigNumber.from(tx.rawContract.value);
 
         if (value.eq('0')) {
             return;
         }
         
-        if (from !== ZERO_ADDRESS) {
-            balances[from] = balances[from].sub(value);
-            assert(balances[from].gte('0'));
-            assert(addresses.indexOf(from) !== -1);
+        if (tx.from !== ZERO_ADDRESS) {
+            balances[tx.from] = balances[tx.from].sub(value);
+            assert(balances[tx.from].gte('0'));
+            assert(addresses.indexOf(tx.from) !== -1);
         }
         
-        if (to !== ZERO_ADDRESS) {
-            balances[to] = balances[to] || ethers.BigNumber.from('0');   
-            balances[to] = balances[to].add(value);
-            assert(addresses.indexOf(to) !== -1);
+        if (tx.to !== ZERO_ADDRESS) {
+            balances[tx.to] = balances[tx.to] || ethers.BigNumber.from('0');   
+            balances[tx.to] = balances[tx.to].add(value);
+            assert(addresses.indexOf(tx.to) !== -1);
         }
     }
     
@@ -372,14 +362,11 @@ function calculateS(transfers: Transfer[], addresses: string[], startBlock: numb
 function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     const addrs: string[] = [];
     transfers.forEach(tx => {
-        const from = tx.from.toLowerCase();
-        const to = tx.to.toLowerCase();
-
-        if (from !== ZERO_ADDRESS && addrs.indexOf(from) === -1) {
-            addrs.push(from);
+        if (tx.from !== ZERO_ADDRESS && addrs.indexOf(tx.from) === -1) {
+            addrs.push(tx.from);
         }
-        if (to !== ZERO_ADDRESS && addrs.indexOf(to) === -1) {
-            addrs.push(to);
+        if (tx.to !== ZERO_ADDRESS && addrs.indexOf(tx.to) === -1) {
+            addrs.push(tx.to);
         }
     });
     return addrs;
@@ -420,16 +407,15 @@ function calculateDiversityMultipliersFromYVecs(yVecPerPool: {[key: string]: mat
     return mVecPerPool;
 }
 
-function calculateTimeMultipliers(_S: number[][], addresses: string[], oldStacks: TimeDataStackMapping): [number[], TimeDataStackMapping] {
-    // NOTE: ROUNDING ERROR BIG NUMBER!
-
+function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], oldStacks: TimeDataStackMapping, startBlock: number): [number[], TimeDataStackMapping] {
     const newStacks: TimeDataStackMapping = {};
     const ans: number[] = [];
 
-    for (let i = 0; i < addresses.length; i++) {
-        const address = addresses[i];
+    const groupedTransfers = groupTransfersByAddress(transfers);
+
+    addresses.forEach(address => {
         let newStackOfUser: TimeDataStack;
-        let previousLpBalance = 0;
+        let balance = ethers.BigNumber.from('0');
 
         if (oldStacks[address] === undefined) {
             newStackOfUser = [];
@@ -442,70 +428,98 @@ function calculateTimeMultipliers(_S: number[][], addresses: string[], oldStacks
                 }
             });
 
-            previousLpBalance = oldStacks[address].reduce((prev, curr) => prev + curr.amount, 0);
+            balance = oldStacks[address].reduce((prev, curr) => prev.add(curr.amount), ethers.BigNumber.from('0'));
         }
-        
 
-        const _SRow = _S[i];
+        if (groupedTransfers[address] !== undefined) {
+            groupedTransfers[address].forEach(tx => {
+                let value = ethers.BigNumber.from(tx.rawContract.value);
+                
+                if (parseInt(tx.blockNum) < startBlock || value.eq('0')) return;
 
-        for (let j = 0; j < _SRow.length; j++) {
-            const currentLpBalance = _SRow[j];
-            
-            if (currentLpBalance > previousLpBalance) {
-                // user deposited
-                // add to stack
-                // newStackOfUser.push([currentLpBalance - previousLpBalance, 1]);
-                newStackOfUser.push({
-                    amount: currentLpBalance - previousLpBalance,
-                    multiplier: 1
-                });
-            }
-            else if (currentLpBalance < previousLpBalance) {
-                // user withdrew
-                // work down the stack
-                let amountToSubtract = previousLpBalance - currentLpBalance;
-                while (amountToSubtract > 0) {
-                    const topElement = newStackOfUser[newStackOfUser.length - 1];
-                    const topElementAmount = topElement.amount;
-                    
-                    if (topElementAmount <= amountToSubtract) {
-                        newStackOfUser.pop();
-                    }
-                    else {
-                        topElement.amount -= amountToSubtract;
-                        break; // redundant
-                    }
-
-                    amountToSubtract -= topElementAmount;
+                if (tx.to === address) {
+                    // user deposited
+                    // add to stack
+                    newStackOfUser.push({
+                        amount: value,
+                        multiplier: 1
+                    });
                 }
-            }
+                else if (tx.from === address) {
+                    // user withdrew
+                    // work down the stack
 
-            previousLpBalance = currentLpBalance;
+                    // debugging sanity check - value withdrawn is less than or equal to amount reflected in stack
+                    assert(value.lte(newStackOfUser.reduce((prev, curr) => prev.add(curr.amount), ethers.BigNumber.from('0'))));
+
+                    while (value.gt('0')) {
+                        const topElement = newStackOfUser[newStackOfUser.length - 1];
+                        const topElementAmount = topElement.amount;
+                        
+                        if (topElementAmount.lte(value)) {
+                            newStackOfUser.pop();
+                        }
+                        else {
+                            topElement.amount = topElement.amount.sub(value);
+                            assert(topElement.amount.gt('0'));
+                            break; // redundant
+                        }
+
+                        value = value.sub(topElementAmount);
+                    }
+                }
+            });
         }
 
         newStacks[address] = newStackOfUser;
 
-        const multiplierForThisUser =  _SRow[_SRow.length - 1] === 0 ? 0 : newStackOfUser.reduce((prev, curr) => prev + curr.amount*curr.multiplier, 0) / _SRow[_SRow.length - 1];
+        const finalBalance = newStackOfUser.reduce((prev, curr) => prev.add(curr.amount), ethers.BigNumber.from('0'));
+        
+        assert(finalBalance.gte('0'));
+        const multiplierForThisUser = finalBalance.eq('0') ? 
+            1
+            : 
+            newStackOfUser.reduce((prev, curr) => prev + Number(ethers.BigNumber.from(curr.amount))*curr.multiplier, 0) / Number(finalBalance);
+        
+        assert(multiplierForThisUser >= 1, multiplierForThisUser + '');
 
-        assert(_SRow[_SRow.length - 1] === newStackOfUser.reduce((prev, curr) => prev + curr.amount, 0));
-        assert(multiplierForThisUser === 0 || multiplierForThisUser >= 1);
-
-        ans.push(Math.max(1, multiplierForThisUser));
-    }
+        ans.push(multiplierForThisUser);
+    });
 
     return [ans, newStacks];
 }
 
-function generateFreshTimeMultiplierStacks(_S: number[][], addresses: string[]): TimeDataStackMapping {
+function generateFreshTimeMultiplierStacks(transfers: Transfer[], addresses: string[]): TimeDataStackMapping {
     const ans: {[key: string]: TimeDataStack} = {};
-    for (let i = 0; i < addresses.length; i++) {
-        ans[addresses[i]] = [{
-            amount: _S[i][_S[i].length - 1],
+    const groupedTransfers = groupTransfersByAddress(transfers);
+
+    Object.entries(groupedTransfers).forEach(entry => {
+        const address = entry[0];
+        const txs = entry[1];
+
+        if (address === ZERO_ADDRESS) return;
+
+        // find final balance of this address
+        let amt = ethers.BigNumber.from('0');
+        txs.forEach(tx => {
+            if (tx.to === address) {
+                amt = amt.add(tx.rawContract.value);
+            }
+            else {
+                amt = amt.sub(tx.rawContract.value);
+                assert(amt.gte('0'), address);
+            }
+        });
+
+        ans[address] = [{
+            amount: amt,
             multiplier: 1
         }];
-    }
+    });
+
     return ans;
 }
+
 
 function getTimeMultiplierRecordFilePath(poolAddress: string, endBlock: number): string {
     return `${TIME_MULTIPLIER_RECORDS_DIRECTORY}/${poolAddress}-${endBlock}.json`
@@ -539,9 +553,6 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
 }
 
 (async () => {
-    // TODO: maybe use BigNumber for _V calculation - not sure if floating point error will become problematic
-    // TODO: use the graph or blockchain-etl for erc20 transfers - the 10K transfer limit could be a future issue if this is used long-term
-
     TIMING.scriptStart = Date.now();
 
     // get all erc20 transfer data
@@ -571,38 +582,27 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
         }
 
         const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
-        fs.writeFileSync('./foo', JSON.stringify(_Yp));
-        process.exit();
-    
-        // // calculate _S
-        // const _S = calculateS(erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
-        // await testS(_S, allUserAddresses, pool.address, START_BLOCK, END_BLOCK);
-    
-        // // calculate _Yp = _S*_V := sum of liquidity at each block for each user (USD)
-        // const _Yp = math.multiply(math.matrix(_S), math.matrix(_V));
-        // assert(_Yp.size()[0] === allUserAddresses.length);
 
         yVecPerPool[pool.address] = _Yp;
 
         // create time multiplier vector
-        // let tVec: number[];
-        // let newStacks: TimeDataStackMapping;
+        let tVec: number[];
+        let newStacks: TimeDataStackMapping;
+        if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
+            // we're using records from the previous run 
+            const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
+            [tVec, newStacks] = calculateTimeMultipliers(erc20TransfersByPool[pool.address], allUserAddresses, oldStacks, START_BLOCK);
+        }
+        else {
+            console.warn('Not using old time multiplier data.');
+            tVec = Array(allUserAddresses.length).fill(1);
+            newStacks = generateFreshTimeMultiplierStacks(erc20TransfersByPool[pool.address], allUserAddresses);
+        }
 
-        // if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
-        //     // we're using records from the previous run 
-        //     const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
-        //     [tVec, newStacks] = calculateTimeMultipliers(_S, allUserAddresses, oldStacks);
-        // }
-        // else {
-        //     console.warn('Not using old time multiplier data.');
-        //     tVec = Array(allUserAddresses.length).fill(1);
-        //     newStacks = generateFreshTimeMultiplierStacks(_S, allUserAddresses);
-        // }
-
-        tVecPerPool[pool.address] = math.ones([allUserAddresses.length]) as math.Matrix;
+        tVecPerPool[pool.address] = math.matrix(tVec);
 
         // save time multipliers for later runs
-        // await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
+        await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
     }
 
     // create diversity multiplier vectors

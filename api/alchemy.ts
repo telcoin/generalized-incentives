@@ -37,7 +37,12 @@ export async function getTransfers(erc20Address: string, startblock: number, end
         const response = await fetch(APIURL, opts);
         const resJson = await response.json() as AlchemyTransfersResponse;
 
-        ans = ans.concat(resJson.result.transfers);
+        resJson.result.transfers.forEach(tx => {
+            tx.from = tx.from.toLowerCase();
+            tx.to = tx.to.toLowerCase();
+            tx.rawContract.address = tx.rawContract.address.toLowerCase();
+            ans.push(tx);
+        })
 
         if (resJson.result.pageKey === undefined) {
             return ans;
