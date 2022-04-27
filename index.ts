@@ -29,31 +29,11 @@ const POOLS = [
         symbol: "TEL/BAL",
         address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
         protocol: "balancer"
-    },
-    // {
-    //     symbol: "LINK/BAL/WETH/AAVE",
-    //     address: "0xce66904B68f1f070332Cbc631DE7ee98B650b499".toLowerCase(),
-    //     protocol: "balancer"
-    // },
-    // {
-    //     symbol: "USDC/LINK/BAL/WETH/AAVE",
-    //     address: "0x36128D5436d2d70cab39C9AF9CcE146C38554ff0".toLowerCase(),
-    //     protocol: "balancer"
-    // },
-    // {
-    //     symbol: "blah",
-    //     address: "0x0297e37f1873D2DAb4487Aa67cD56B58E2F27875".toLowerCase(),
-    //     protocol: "balancer"
-    // }
-    // {
-    //     symbol: "TEL/QUICK",
-    //     address: "0xe88e24f49338f974b528ace10350ac4576c5c8a1".toLowerCase(),
-    //     protocol: "quickswap"
-    // }
+    }
 ];
 
-const START_BLOCK = 26548163 + 1*604800/20;
-const END_BLOCK = 26548163 + 2*604800/20;
+const START_BLOCK = 26548163 + 604800/2;
+const END_BLOCK = 26548163 + 2*604800/2;
 
 const INCENTIVES = 20000000;
 const DECIMALS = 2;
@@ -61,7 +41,7 @@ const DECIMALS = 2;
 const DIVERSITY_MAX_MULTIPLIER = 1.5;
 const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 1);
 
-const TIME_BASE_MULTIPLIER = 2;
+const TIME_BASE_MULTIPLIER = 1.05
 const RESET_TIME = false;
 
 const TIME_MULTIPLIER_RECORDS_DIRECTORY = './timeMultiplierRecords';
@@ -423,7 +403,7 @@ function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], ol
         else {
             newStackOfUser = oldStacks[address].map(e => {
                 return {
-                    amount: e.amount,
+                    amount: ethers.BigNumber.from(e.amount),
                     multiplier: e.multiplier*TIME_BASE_MULTIPLIER
                 }
             });
@@ -481,7 +461,7 @@ function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], ol
             : 
             newStackOfUser.reduce((prev, curr) => prev + Number(ethers.BigNumber.from(curr.amount))*curr.multiplier, 0) / Number(finalBalance);
         
-        assert(multiplierForThisUser >= 1, multiplierForThisUser + '');
+        assert(multiplierForThisUser >= .999, multiplierForThisUser + '');
 
         ans.push(multiplierForThisUser);
     });
