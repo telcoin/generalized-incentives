@@ -1,29 +1,48 @@
 import fetch from "cross-fetch";
-import fetchRetry from "fetch-retry";
-import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject, ApolloQueryResult, gql } from "@apollo/client";
+import { ApolloClient, HttpLink, InMemoryCache, NormalizedCacheObject, ApolloQueryResult, gql, ApolloError } from "@apollo/client";
 import { HistoricalTokenValue } from "./types";
 import { consoleReplaceLine, decimalToPercent, shortenAddress } from "../helpers/misc";
 
-const customFetch = fetchRetry(fetch, {
-    retries: 5
-});
 
 const BALANCERAPIURL = 'https://api.thegraph.com/subgraphs/name/balancer-labs/balancer-polygon-v2';
 const BLOCKSAPIURL = 'https://api.thegraph.com/subgraphs/name/dynamic-amm/ethereum-blocks-polygon';
 
-const PROMISE_BATCH_SIZE = 100;
+const PROMISE_BATCH_SIZE = 150;
 
 
 // create graphql clients
 const balancerClient = new ApolloClient({
-    link: new HttpLink({ uri: BALANCERAPIURL, fetch: customFetch }),
+    link: new HttpLink({ uri: BALANCERAPIURL, fetch }),
     cache: new InMemoryCache()
 });
 
 const blocksClient = new ApolloClient({
-    link: new HttpLink({ uri: BLOCKSAPIURL, fetch: customFetch }),
+    link: new HttpLink({ uri: BLOCKSAPIURL, fetch}),
     cache: new InMemoryCache()
 });
+
+function sleep(ms: number) {
+    return new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+            resolve();
+        }, ms);
+    });
+}
+
+async function queryWithRetries(client: ApolloClient<NormalizedCacheObject>, q: string, n: number = 10) {
+    let err;
+    for (let i = 0; i < n; i++) {
+        try {
+            return await client.query({query: gql(q), fetchPolicy: 'no-cache'});
+        }
+        catch (e) {
+            err = e as Error;
+            console.log(err.message);
+            await sleep(1000);
+        }
+    }
+    throw err;
+}
 
 export async function getBlocks(start:number, end:number, pageSize:number = 100) {
     let results: any[] = [];
@@ -46,7 +65,7 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
         }`;
 
         promises.push(new Promise(async (resolve, reject) => {
-            const y = await blocksClient.query({query: gql(q), fetchPolicy: 'no-cache'});
+            const y = await queryWithRetries(blocksClient, q);
             
             const currPct = decimalToPercent(currentPage / numPages);
             
@@ -88,8 +107,8 @@ async function getDataPaginatedById<ReturnType>(
     while (true) {
         const q = queryStringFunction(lastId);
 
-        const res = await client.query({query: gql(q), fetchPolicy: 'no-cache'});
-
+        const res = await queryWithRetries(client, q);
+        
         if (res.data[arrayName].length === 0) {
             results.sort();
             return results;
@@ -166,7 +185,7 @@ export async function getLpTokenValueAtBlockBalancer(poolAddress: string, block:
         }
     }`;
 
-    const y = (await balancerClient.query({query: gql(q), fetchPolicy: 'no-cache'})).data.pools[0];
+    const y = (await queryWithRetries(balancerClient, q)).data.pools[0];
     
     return Number(y.totalLiquidity) / Number(y.totalShares);
 }
@@ -221,7 +240,7 @@ async function batchQueries<ReturnType>(
         
         promises.push(new Promise(async (resolve, reject) => {
             const qs = queryStringFunction(p);
-            const response = await client.query({query: gql(qs), fetchPolicy: 'no-cache'});
+            const response = await queryWithRetries(client, qs);
 
             resolve(processResponseFunction(p, response.data));
         }));
@@ -241,6 +260,7 @@ async function getBalancerPoolIdFromAddress(address: string): Promise<string> {
             id
         }
     }`
-    const res = await balancerClient.query({query: gql(q), fetchPolicy: 'no-cache'});
+
+    const res = await queryWithRetries(balancerClient, q);
     return res.data.pools[0].id;
 }

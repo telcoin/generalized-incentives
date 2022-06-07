@@ -3,8 +3,6 @@ dotenv.config();
 
 import { assert } from 'chai';
 
-import fetch from "cross-fetch";
-import fetchRetry from "fetch-retry";
 import { ethers } from 'ethers';
 
 import * as math from 'mathjs';
@@ -13,36 +11,36 @@ import * as alchemy from './api/alchemy';
 import { HistoricalTokenValue, Transfer } from './api/types';
 
 import * as graph from './api/graph';
-import { testDiversity, testS, testVBalancer } from './helpers/testingHelper';
+import { testDiversity, testVBalancer } from './helpers/testingHelper';
 
 import * as fsAsync from 'fs/promises';
 import * as fs from 'fs';
 import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers/misc';
+import * as polygonscan from './api/polygonscan';
 
-const POOLS = [
+const POOLS: Pool[] = [
     {
         symbol: "TEL/BAL/USDC",
         address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
-        protocol: "balancer"
     },
     {
         symbol: "TEL/BAL",
         address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
-        protocol: "balancer"
     }
 ];
 
-const START_BLOCK = 26548163 + 604800/2;
-const END_BLOCK = 26548163 + 2*604800/2;
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 1)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 2)).getTime()/1000);
 
-const INCENTIVES = 20000000;
+const SECONDS_PER_WEEK = 604800;
+
+const TOTAL_INCENTIVES_PER_PERIOD = 20_000_000;
 const DECIMALS = 2;
 
 const DIVERSITY_MAX_MULTIPLIER = 1.5;
 const DIVERSITY_BOOST_FACTOR = (DIVERSITY_MAX_MULTIPLIER - 1) / (POOLS.length - 1);
 
 const TIME_BASE_MULTIPLIER = 1.05
-const RESET_TIME = false;
 
 const TIME_MULTIPLIER_RECORDS_DIRECTORY = './timeMultiplierRecords';
 const REPORTS_DIRECTORY = './reports';
@@ -51,6 +49,11 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const blockTimestampToNumber: {[key: string]: string} = {};
 const blockNumberToTimestamp: {[key: string]: string} = {};
+
+type Pool = {
+    symbol: string,
+    address: string
+};
 
 type TimeDataStack = {
     amount: ethers.BigNumber,
@@ -231,114 +234,6 @@ function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: stri
     return math.matrix(_Yp);
 }
 
-
-function calculateS(transfers: Transfer[], addresses: string[], startBlock: number, endBlock: number) {
-    /*
-    PLAN
-
-    recreate balances of all users at START_BLOCK by iterating over transfers
-        - pause once START_BLOCK is reached
-
-    use above balances to create first column of _S
-
-    continue iteration over transfers
-        - fill in columns between last filled column and current block's column with values of last filled in column (because state is unchanged during these blocks)
-        - set column corresponding to current transfer block to current balances state
-
-    return
-
-    */
-
-    const balances: {[key: string]: ethers.BigNumber} = {};
-
-    function updateBalances(tx: Transfer) {
-        const value = ethers.BigNumber.from(tx.rawContract.value);
-
-        if (value.eq('0')) {
-            return;
-        }
-        
-        if (tx.from !== ZERO_ADDRESS) {
-            balances[tx.from] = balances[tx.from].sub(value);
-            assert(balances[tx.from].gte('0'));
-            assert(addresses.indexOf(tx.from) !== -1);
-        }
-        
-        if (tx.to !== ZERO_ADDRESS) {
-            balances[tx.to] = balances[tx.to] || ethers.BigNumber.from('0');   
-            balances[tx.to] = balances[tx.to].add(value);
-            assert(addresses.indexOf(tx.to) !== -1);
-        }
-    }
-    
-    let i = 0;
-    while (parseInt(transfers[i].blockNum) <= startBlock) {
-        const tx = transfers[i];
-        updateBalances(tx);
-        i++;
-    }
-
-    const _S: number[][] = Array(addresses.length).fill([]);
-
-    function fillColumns(numberToFill: number) {
-        TIMING.fillingData.last = Date.now();
-        const nCols = _S[0].length;
-        // iterate over rows
-        for (let _row = 0; _row < _S.length; _row++) {
-            // fill in extra data for each column until we hit current block
-            const v = _S[_row][nCols - 1];
-            for (let _n = 0; _n < numberToFill; _n++) {
-                _S[_row].push(v)
-            }
-        }
-        TIMING.fillingData.total += Date.now() - TIMING.fillingData.last;
-    }
-
-
-    // create initial column
-    for (let j = 0; j < addresses.length; j++) {
-        _S[j] = [Number(balances[addresses[j]] || 0)];
-    }
-
-    process.stdout.write('filling _S matrix progress: 0%');
-
-    let lastPct = 0;
-    while (i < transfers.length && parseInt(transfers[i].blockNum) < endBlock) {
-        const tx = transfers[i];
-        const blockNo = parseInt(tx.blockNum);
-        
-        updateBalances(tx);
-
-        const nCols = _S[0].length;
-        if (blockNo - startBlock > nCols) {
-            fillColumns(blockNo - startBlock - nCols);
-        }
-
-        for (let iAddr = 0; iAddr < addresses.length; iAddr++) {
-            _S[iAddr].push(Number(balances[addresses[iAddr]] || 0));
-        }
-
-        // log progress
-        const currPct = decimalToPercent(nCols / (endBlock - startBlock));
-        if (currPct > lastPct) {
-            consoleReplaceLine(`filling _S matrix progress: ${currPct}%`);
-            lastPct = currPct;
-        }
-            
-        i++;
-    }
-
-    const nCols = _S[0].length;
-    if (endBlock - startBlock > nCols) {
-        fillColumns(endBlock - startBlock - nCols);
-    }
-
-    consoleReplaceLine(`filling _S matrix progress: 100%\n`);
-
-    return _S;
-}
-
-
 function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     const addrs: string[] = [];
     transfers.forEach(tx => {
@@ -387,7 +282,7 @@ function calculateDiversityMultipliersFromYVecs(yVecPerPool: {[key: string]: mat
     return mVecPerPool;
 }
 
-function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], oldStacks: TimeDataStackMapping, startBlock: number): [number[], TimeDataStackMapping] {
+function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], oldStacks: TimeDataStackMapping, startBlock: number, endBlock: number): [number[], TimeDataStackMapping] {
     const newStacks: TimeDataStackMapping = {};
     const ans: number[] = [];
 
@@ -415,7 +310,7 @@ function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], ol
             groupedTransfers[address].forEach(tx => {
                 let value = ethers.BigNumber.from(tx.rawContract.value);
                 
-                if (parseInt(tx.blockNum) < startBlock || value.eq('0')) return;
+                if (Number(tx.blockNum) < startBlock || Number(tx.blockNum) >= endBlock || value.eq('0')) return;
 
                 if (tx.to === address) {
                     // user deposited
@@ -469,7 +364,7 @@ function calculateTimeMultipliers(transfers: Transfer[], addresses: string[], ol
     return [ans, newStacks];
 }
 
-function generateFreshTimeMultiplierStacks(transfers: Transfer[], addresses: string[]): TimeDataStackMapping {
+function generateFreshTimeMultiplierStacks(transfers: Transfer[], endBlock: number): TimeDataStackMapping {
     const ans: {[key: string]: TimeDataStack} = {};
     const groupedTransfers = groupTransfersByAddress(transfers);
 
@@ -482,6 +377,8 @@ function generateFreshTimeMultiplierStacks(transfers: Transfer[], addresses: str
         // find final balance of this address
         let amt = ethers.BigNumber.from('0');
         txs.forEach(tx => {
+            if (Number(tx.blockNum) >= endBlock) return;
+
             if (tx.to === address) {
                 amt = amt.add(tx.rawContract.value);
             }
@@ -513,7 +410,7 @@ function saveTimeMultiplierRecord(poolAddress: string, endBlock: number, stacks:
     return fsAsync.writeFile(getTimeMultiplierRecordFilePath(poolAddress, endBlock), JSON.stringify(stacks));
 }
 
-function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBlock: number, endBlock: number) {
+function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startTs: number, endTs: number) {
     assert(payoutMatrix.size().length === 1 && payoutMatrix.size()[0] === userAddresses.length);
     const payoutArray = payoutMatrix.toArray() as number[];
 
@@ -529,60 +426,59 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
         fs.mkdirSync(REPORTS_DIRECTORY);
     }
 
-    return fsAsync.writeFile(`${REPORTS_DIRECTORY}/${startBlock}-${endBlock}.csv`, s);
+    return fsAsync.writeFile(`${REPORTS_DIRECTORY}/${startTs}-${endTs}.csv`, s);
 }
 
-(async () => {
-    TIMING.scriptStart = Date.now();
+async function calculateIncentivesForOneWeek(
+    pools: Pool[],
+    erc20TransfersByPool: {[key: string]: Transfer[]},
+    allUserAddresses: string[],
+    timeDataStacks: {[key:string]: TimeDataStackMapping}, 
+    startTs: number, 
+    endTs: number
+) {
+    // get start and end blocks
+    const startBlock = await polygonscan.getBlockNumberByTimestamp(startTs);
+    const endBlock = await polygonscan.getBlockNumberByTimestamp(endTs);
 
-    // get all erc20 transfer data
-    process.stdout.write('Fetching LP token transfers...');
-    const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS.map(p => p.address), 0, END_BLOCK);
-    process.stdout.write('Done!\n');
-
-    // build master list of users
-    const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
-
-    // create mapping between block timestamp and number
-    await createBlockMapping(START_BLOCK, END_BLOCK);
+    // calculate how much incentives to allocate this round
+    const incentivesForThisWeek = TOTAL_INCENTIVES_PER_PERIOD * (endTs - startTs) / (PERIOD_END_TS - PERIOD_START_TS);
 
     const yVecPerPool: {[key: string]: math.Matrix} = {};
     const tVecPerPool: {[key: string]: math.Matrix} = {};
 
-    for (let i = 0; i < POOLS.length; i++) {
-        const pool = POOLS[i];
+    const newTimeDataStacksPerPool: {[key:string]: TimeDataStackMapping} = {};
+
+    for (let i = 0; i < pools.length; i++) {
+        const pool = pools[i];
+
         // calculate _V
         let _V: number[];
-        if (pool.protocol === "balancer") {
-            _V = await calculateVBalancer(pool.address, START_BLOCK, END_BLOCK);
-            await testVBalancer(_V, pool.address, START_BLOCK, END_BLOCK);
-        }
-        else {
-            throw new Error("Invalid protocol");
-        }
+        _V = await calculateVBalancer(pool.address, startBlock, endBlock);
+        await testVBalancer(_V, pool.address, startBlock, endBlock);
 
-        const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, START_BLOCK, END_BLOCK);
+        const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, startBlock, endBlock);
 
         yVecPerPool[pool.address] = _Yp;
 
         // create time multiplier vector
         let tVec: number[];
         let newStacks: TimeDataStackMapping;
-        if (!RESET_TIME && fs.existsSync(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK))) {
+        if (timeDataStacks[pool.address] !== undefined) {
             // we're using records from the previous run 
-            const oldStacks = require(getTimeMultiplierRecordFilePath(pool.address, START_BLOCK));
-            [tVec, newStacks] = calculateTimeMultipliers(erc20TransfersByPool[pool.address], allUserAddresses, oldStacks, START_BLOCK);
+            [tVec, newStacks] = calculateTimeMultipliers(erc20TransfersByPool[pool.address], allUserAddresses, timeDataStacks[pool.address], startBlock, endBlock);
         }
         else {
             console.warn('Not using old time multiplier data.');
             tVec = Array(allUserAddresses.length).fill(1);
-            newStacks = generateFreshTimeMultiplierStacks(erc20TransfersByPool[pool.address], allUserAddresses);
+            newStacks = generateFreshTimeMultiplierStacks(erc20TransfersByPool[pool.address], endBlock);
         }
 
         tVecPerPool[pool.address] = math.matrix(tVec);
+        newTimeDataStacksPerPool[pool.address] = newStacks;
 
         // save time multipliers for later runs
-        await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
+        // await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
     }
 
     // create diversity multiplier vectors
@@ -591,10 +487,10 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
 
     // calculate _F (with diversity and time boosts)
     let _F = math.zeros(Object.values(yVecPerPool)[0].size());
-    for (let i = 0; i < POOLS.length; i++) {
-        const _Yp = yVecPerPool[POOLS[i].address];
-        const _Dp = dVecPerPool[POOLS[i].address];
-        const _Tp = tVecPerPool[POOLS[i].address];
+    for (let i = 0; i < pools.length; i++) {
+        const _Yp = yVecPerPool[pools[i].address];
+        const _Dp = dVecPerPool[pools[i].address];
+        const _Tp = tVecPerPool[pools[i].address];
 
         const YD = math.dotMultiply(_Yp, _Dp);
         const YDT = math.dotMultiply(YD, _Tp);
@@ -605,9 +501,65 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startBl
     const normalizedF = math.multiply(1 / math.sum(_F), _F) as math.Matrix;
     assert(Math.abs(math.sum(normalizedF) - 1) < 1e-8);
 
-    const calculatedIncentives = math.multiply(INCENTIVES, normalizedF) as math.Matrix;
+    const calculatedIncentives = math.multiply(incentivesForThisWeek, normalizedF) as math.Matrix;
 
-    await writeReport(calculatedIncentives, allUserAddresses, START_BLOCK, END_BLOCK);
+    return {calculatedIncentives, newTimeDataStacksPerPool};
+}
+
+function secondsToDateString(d: number) {
+    return new Date(d*1000).toISOString().split("T")[0];
+}
+
+(async () => {
+    TIMING.scriptStart = Date.now();
+
+    if (new Date(PERIOD_END_TS*1000) > new Date()) {
+        console.log("Period has not ended yet");
+        return;
+    }
+
+    const periodStartBlock = await polygonscan.getBlockNumberByTimestamp(PERIOD_START_TS);
+    const periodEndBlock = await polygonscan.getBlockNumberByTimestamp(PERIOD_END_TS);
+
+    // get all erc20 transfer data
+    process.stdout.write('Fetching LP token transfers...');
+    const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS.map(p => p.address), 0, -1);
+    process.stdout.write('Done!\n');
+
+    // build master list of users
+    const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
+
+    // create mapping between block timestamp and number
+    await createBlockMapping(periodStartBlock, periodEndBlock);
+
+    ////////////////////////////////////////
     
-    console.log(`finished in ${Math.floor((Date.now() - TIMING.scriptStart)/1000)} seconds`);
+    let weekStartTs = PERIOD_START_TS;
+    let weekEndTs = weekStartTs;
+    
+    let lastWeekTimeDataStacks: {[key:string]: TimeDataStackMapping} = {};
+    let calculatedIncentives = math.zeros([allUserAddresses.length]) as math.Matrix;
+
+    while (weekEndTs < PERIOD_END_TS) {
+        // let x: math.Matrix;
+        weekStartTs = weekEndTs;
+        weekEndTs += SECONDS_PER_WEEK;
+        weekEndTs = Math.min(weekEndTs, PERIOD_END_TS);
+
+        console.log(`\nCalculating round ${secondsToDateString(weekStartTs)} - ${secondsToDateString(weekEndTs)}\n`)
+
+        let output = await calculateIncentivesForOneWeek(
+            POOLS,
+            erc20TransfersByPool,
+            allUserAddresses,
+            lastWeekTimeDataStacks,
+            weekStartTs,
+            weekEndTs
+        );
+
+        lastWeekTimeDataStacks = output.newTimeDataStacksPerPool;
+        calculatedIncentives = math.add(calculatedIncentives, output.calculatedIncentives);
+    }
+
+    await writeReport(calculatedIncentives, allUserAddresses, PERIOD_START_TS, PERIOD_END_TS);
 })();

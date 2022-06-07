@@ -1,10 +1,14 @@
 import fetch from "cross-fetch";
-import { AlchemyTransfersParameters, AlchemyTransfersResponse, Param, Transfer } from "./types";
+import { AlchemyBlockResponse, AlchemyTransfersParameters, AlchemyTransfersResponse, Param, Transfer } from "./types";
 
 const KEY = process.env.ALCHEMYKEY;
 const APIURL = "https://polygon-mainnet.g.alchemy.com/v2/" + KEY;
 
 export async function getTransfers(erc20Address: string, startblock: number, endBlock: number, additionalOptions: Param = {}): Promise<Transfer[]> {
+    if (endBlock === -1) {
+        endBlock = await getTopBlockNumber();
+    }
+    
     const body = {
         "jsonrpc": "2.0",
         "id": 0,
@@ -60,4 +64,25 @@ export async function getTransfersOfPools(erc20Addresses: string[], startBlock: 
     }
 
     return ans;
+}
+
+async function getTopBlockNumber(): Promise<number> {
+    const body = {
+        "jsonrpc":"2.0",
+        "method":"eth_blockNumber",
+        "params":[],
+        "id":0
+    };
+
+    const opts = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        redirect: "follow"
+    } as RequestInit;
+
+    const response = await fetch(APIURL, opts);
+    const resJson = await response.json() as AlchemyBlockResponse;
+
+    return Number(resJson.result);
 }

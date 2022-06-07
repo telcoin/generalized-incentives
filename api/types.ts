@@ -4,6 +4,12 @@ export interface AlchemyTransfersResponse {
     jsonrpc: string;
 }
 
+export interface AlchemyBlockResponse {
+    id: number,
+    result: string,
+    jsonrpc: string
+}
+
 export interface Result {
     transfers: Transfer[];
     pageKey:   string;
