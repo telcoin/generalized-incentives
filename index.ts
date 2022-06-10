@@ -8,6 +8,7 @@ import { ethers } from 'ethers';
 import * as math from 'mathjs';
 
 import * as alchemy from './api/alchemy';
+import * as balancerContracts from './api/balancerContracts';
 import { HistoricalTokenValue, Transfer } from './api/types';
 
 import * as graph from './api/graph';
@@ -19,6 +20,38 @@ import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers
 import * as polygonscan from './api/polygonscan';
 
 const POOLS: Pool[] = [
+    // {
+    //     symbol: "TEL/LINK",
+    //     address: "0x82dB37683832A36F1B5C2863D7f9c4438DED4093".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/MANA",
+    //     address: "0xA2c0539CF5a8a930215d82106d8973a2031f7FB3".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/APE",
+    //     address: "0x385Fd3414AfB52D5cD60E22f17826cF992060244".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/CRV",
+    //     address: "0xfA73E062497b0cbD5012385A08D9616cA5BD9Ee9".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/MKR",
+    //     address: "0xC42C42256B484E574A458d5D8EE4fD7876F6d8D7".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/AXS",
+    //     address: "0x913b9Ae6d6a228A38fbF2310e176C6ea82E57611".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/UNI",
+    //     address: "0x77215a7E8a8D427D25660414788d2C58dd568989".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/GRT",
+    //     address: "0x0a2b8a82fFdf39AcCe59729f6285BAF530a13c53".toLowerCase(),
+    // },
     {
         symbol: "TEL/BAL/USDC",
         address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
@@ -29,8 +62,8 @@ const POOLS: Pool[] = [
     }
 ];
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 1)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 2)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 5, 6)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
@@ -84,9 +117,13 @@ const TIMING = {
 /////////////////////////////////////////////////////////////
 
 function calculateVFromData(liquidityData: HistoricalTokenValue[], liquidityValueAtStartBlock: number, startBlock: number, endBlock: number): number[] {
+    if (liquidityData.length === 0) {
+        return Array(endBlock - startBlock).fill(liquidityValueAtStartBlock);
+    }
+    
     liquidityData.sort((a, b) => {
         return a.block - b.block;
-    })
+    });
 
     // make sure it is in ascending block order
     for (let i = 0; i < liquidityData.length-1; i++) {
@@ -135,11 +172,12 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
     blocksOfInteraction = [...new Set(blocksOfInteraction)];
 
     // get value of 1 LP token at each block where there is a swap, join, or exit
-    const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
+    const liquidityData = await balancerContracts.getLptValuesAtManyBlocks(poolAddress, blocksOfInteraction);
+    // const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
     assert(liquidityData.length === blocksOfInteraction.length);
 
-    const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
-
+    const initialLiquidity = await balancerContracts.getLptValueAtBlock(poolAddress, startBlock);
+    // const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
     return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
 }
 
@@ -455,7 +493,7 @@ async function calculateIncentivesForOneWeek(
         // calculate _V
         let _V: number[];
         _V = await calculateVBalancer(pool.address, startBlock, endBlock);
-        await testVBalancer(_V, pool.address, startBlock, endBlock);
+        // await testVBalancer(_V, pool.address, startBlock, endBlock);
 
         const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, startBlock, endBlock);
 
