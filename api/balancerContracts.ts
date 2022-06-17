@@ -43,8 +43,20 @@ export async function getLptValuesAtManyBlocks(address: string, blockNums: numbe
 export async function getLptValueAtBlock(address: string, blockNum: number) {
     const telInPool = await getTelInPoolAtBlock(address, blockNum);
     const totalSupply = await getLptSupplyAtBlock(address, blockNum);
+    /// HACK TODO UNDO
+    let f = 1;
+    if (address === "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase()) {
+        f = 1/0.6;
+        // console.log('a')
+    }
+    else if (address === "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase()) {
+        f = 1/0.5;
+        // console.log('b')
+    }
 
-    return Number(telInPool) / Number(totalSupply);
+    // console.log(address)
+
+    return f*(Number(telInPool) / Number(totalSupply));
 }
 
 export async function getTelInPoolAtBlock(address: string, blockNum: number) {
