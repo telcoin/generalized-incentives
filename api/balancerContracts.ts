@@ -2,6 +2,7 @@ import { BigNumber, ethers } from "ethers";
 import {HistoricalTokenValue} from "./types";
 import * as fs from "fs";
 import path from "path";
+import { consoleReplaceLine, decimalToPercent, shortenAddress } from "../helpers/misc";
 
 const balancerVaultAbi = fs.readFileSync(__dirname + '/abi/balancerVault.json').toString();
 const balancerLptAbi = fs.readFileSync(__dirname + '/abi/balancerLpt.json').toString();
@@ -23,7 +24,7 @@ export async function getLptValuesAtManyBlocks(address: string, blockNums: numbe
 
         if (promises.length === BATCH_SIZE) {
             results = results.concat(await Promise.all(promises));
-            console.log(results.length / blockNums.length);
+            consoleReplaceLine(`fetch liquidity data for ${shortenAddress(address)}: ${decimalToPercent(results.length / blockNums.length)}%`);
             promises = [];
         }
     }
@@ -37,26 +38,16 @@ export async function getLptValuesAtManyBlocks(address: string, blockNums: numbe
         });
     }
 
+    consoleReplaceLine(`fetch liquidity data for ${shortenAddress(address)}: 100%\n`);
+
     return ans;
 }
 
 export async function getLptValueAtBlock(address: string, blockNum: number) {
     const telInPool = await getTelInPoolAtBlock(address, blockNum);
     const totalSupply = await getLptSupplyAtBlock(address, blockNum);
-    /// HACK TODO UNDO
-    let f = 1;
-    if (address === "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase()) {
-        f = 1/0.6;
-        // console.log('a')
-    }
-    else if (address === "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase()) {
-        f = 1/0.5;
-        // console.log('b')
-    }
 
-    // console.log(address)
-
-    return f*(Number(telInPool) / Number(totalSupply));
+    return Number(telInPool) / Number(totalSupply);
 }
 
 export async function getTelInPoolAtBlock(address: string, blockNum: number) {

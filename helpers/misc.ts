@@ -1,4 +1,4 @@
-export function shortenAddress(address: string, caps: boolean = true): string {
+export function shortenAddress(address: string, caps: boolean = false): string {
     const x = address.substring(2, 6) + '..' + address.substring(address.length - 4);
     return '0x'+ (caps ? x.toUpperCase() : x.toLowerCase());
 }

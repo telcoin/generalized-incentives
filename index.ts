@@ -20,50 +20,50 @@ import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers
 import * as polygonscan from './api/polygonscan';
 
 const POOLS: Pool[] = [
-    // {
-    //     symbol: "TEL/LINK",
-    //     address: "0x82dB37683832A36F1B5C2863D7f9c4438DED4093".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/MANA",
-    //     address: "0xA2c0539CF5a8a930215d82106d8973a2031f7FB3".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/APE",
-    //     address: "0x385Fd3414AfB52D5cD60E22f17826cF992060244".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/CRV",
-    //     address: "0xfA73E062497b0cbD5012385A08D9616cA5BD9Ee9".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/MKR",
-    //     address: "0xC42C42256B484E574A458d5D8EE4fD7876F6d8D7".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/AXS",
-    //     address: "0x913b9Ae6d6a228A38fbF2310e176C6ea82E57611".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/UNI",
-    //     address: "0x77215a7E8a8D427D25660414788d2C58dd568989".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/GRT",
-    //     address: "0x0a2b8a82fFdf39AcCe59729f6285BAF530a13c53".toLowerCase(),
-    // },
     {
-        symbol: "TEL/BAL/USDC",
-        address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
+        symbol: "TEL/LINK",
+        address: "0x82dB37683832A36F1B5C2863D7f9c4438DED4093".toLowerCase(),
     },
     {
-        symbol: "TEL/BAL",
-        address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
-    }
+        symbol: "TEL/MANA",
+        address: "0xA2c0539CF5a8a930215d82106d8973a2031f7FB3".toLowerCase(),
+    },
+    {
+        symbol: "TEL/APE",
+        address: "0x385Fd3414AfB52D5cD60E22f17826cF992060244".toLowerCase(),
+    },
+    {
+        symbol: "TEL/CRV",
+        address: "0xfA73E062497b0cbD5012385A08D9616cA5BD9Ee9".toLowerCase(),
+    },
+    {
+        symbol: "TEL/MKR",
+        address: "0xC42C42256B484E574A458d5D8EE4fD7876F6d8D7".toLowerCase(),
+    },
+    {
+        symbol: "TEL/AXS",
+        address: "0x913b9Ae6d6a228A38fbF2310e176C6ea82E57611".toLowerCase(),
+    },
+    {
+        symbol: "TEL/UNI",
+        address: "0x77215a7E8a8D427D25660414788d2C58dd568989".toLowerCase(),
+    },
+    {
+        symbol: "TEL/GRT",
+        address: "0x0a2b8a82fFdf39AcCe59729f6285BAF530a13c53".toLowerCase(),
+    },
+    // {
+    //     symbol: "TEL/BAL/USDC",
+    //     address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
+    // },
+    // {
+    //     symbol: "TEL/BAL",
+    //     address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
+    // }
 ];
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 5, 2)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 7)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 9)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
