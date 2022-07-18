@@ -2,4 +2,7 @@ node_modules
 .vscode
 index.js
 .env
-reports/
+# reports/
+venv
+test
+vecs

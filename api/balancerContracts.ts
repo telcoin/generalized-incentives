@@ -1,17 +1,23 @@
-import { BigNumber, ethers } from "ethers";
+import { BigNumber } from "ethers";
+import { createAlchemyWeb3 } from "@alch/alchemy-web3";
 import {HistoricalTokenValue} from "./types";
 import * as fs from "fs";
 import path from "path";
 import { consoleReplaceLine, decimalToPercent, shortenAddress } from "../helpers/misc";
+import {Contract} from 'web3-eth-contract';
 
-const balancerVaultAbi = fs.readFileSync(__dirname + '/abi/balancerVault.json').toString();
-const balancerLptAbi = fs.readFileSync(__dirname + '/abi/balancerLpt.json').toString();
-const provider = new ethers.providers.AlchemyProvider(137, process.env.ALCHEMYKEY);
-const vaultContract = new ethers.Contract("0xba12222222228d8ba445958a75a0704d566bf2c8", balancerVaultAbi, provider);
+const web3 = createAlchemyWeb3("https://polygon-mainnet.g.alchemy.com/v2/" + process.env.ALCHEMYKEY);
 
-const lptContracts: {[key:string]: ethers.Contract} = {};
+const balancerVaultAbi = require(__dirname + '/abi/balancerVault.json');
+const balancerLptAbi = require(__dirname + '/abi/balancerLpt.json');
+// const provider = new ethers.providers.AlchemyProvider(137, process.env.ALCHEMYKEY);
+// const vaultContract = new ethers.Contract("0xba12222222228d8ba445958a75a0704d566bf2c8", balancerVaultAbi, provider);
+const vaultContract = new web3.eth.Contract(balancerVaultAbi, "0xba12222222228d8ba445958a75a0704d566bf2c8");
 
-const BATCH_SIZE = 30;
+
+const lptContracts: {[key:string]: Contract} = {};
+
+const BATCH_SIZE = 5;
 const RETRIES = 5;
 
 export async function getLptValuesAtManyBlocks(address: string, blockNums: number[]): Promise<HistoricalTokenValue[]> {
@@ -53,30 +59,46 @@ export async function getLptValueAtBlock(address: string, blockNum: number) {
 export async function getTelInPoolAtBlock(address: string, blockNum: number) {
     const poolId = await getPoolIdFromLptAddress(address);
     const result = await callContractWithRetries(
-        vaultContract.functions.getPoolTokenInfo, 
-        [poolId, "0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32", {blockTag: blockNum}]
+        vaultContract,
+        "getPoolTokenInfo",
+        [poolId, "0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32"],
+        blockNum
     );
-    // const cash = (await vaultContract.functions.getPoolTokenInfo(poolId, "0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32", {blockTag: blockNum})).cash;
-    return result.cash as BigNumber;
+    return BigNumber.from(result.cash);
 }
 
 export async function getLptSupplyAtBlock(address: string, blockNum: number): Promise<BigNumber> {
-    return (await callContractWithRetries(
-        getLptContract(address).functions.totalSupply, 
-        [{blockTag: blockNum}]
-    ))[0];
+    return BigNumber.from(await callContractWithRetries(
+        getLptContract(address),
+        "totalSupply",
+        [],
+        blockNum
+    ));
     // return (await getLptContract(address).functions.totalSupply({blockTag: blockNum}))[0];
 }
 
 async function getPoolIdFromLptAddress(addr: string): Promise<string> {
-    return (await getLptContract(addr).functions.getPoolId())[0];
+    return (await callContractWithRetries(
+        getLptContract(addr),
+        "getPoolId",
+        [],
+        "latest"
+    ));
+    // return (await getLptContract(addr).functions.getPoolId())[0];
 }
 
-async function callContractWithRetries(contractFunction: ethers.ContractFunction<any>, params: any[]) {
+async function callContractWithRetries(contract: Contract, contractFunction: string, params: any[], block: number | string): Promise<any> {
+    // return contractFunction(...params).then(result => result).catch(err => {
+    //     console.log('\n\n' + err.message + '\n\n');
+    //     if (retries === 0) {
+    //         throw err;
+    //     }
+    //     return callContractWithRetries(contractFunction, params, retries - 1);
+    // });
     let err: Error = new Error();
     for (let i = 0; i < RETRIES; i++) {
         try {
-            return await contractFunction(...params);
+            return await contract.methods[contractFunction](...params).call({}, block);
         }
         catch (e) {
             err = e as Error;
@@ -86,9 +108,9 @@ async function callContractWithRetries(contractFunction: ethers.ContractFunction
     throw err;
 }
 
-export function getLptContract(address: string): ethers.Contract {
+export function getLptContract(address: string): Contract {
     if (lptContracts[address] === undefined) {
-        lptContracts[address] = new ethers.Contract(address, balancerLptAbi, provider);
+        lptContracts[address] = new web3.eth.Contract(balancerLptAbi, address);
     }
     return lptContracts[address];
 }

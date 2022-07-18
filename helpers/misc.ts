@@ -17,3 +17,11 @@ export function consoleReplaceLine(s: string) {
     process.stdout.cursorTo(0);
     process.stdout.write(s);
 }
+
+export function wait(ms: number) {
+    return new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+            resolve();
+        }, ms);
+    })
+}

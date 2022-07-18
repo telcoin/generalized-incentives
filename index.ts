@@ -18,6 +18,7 @@ import * as fsAsync from 'fs/promises';
 import * as fs from 'fs';
 import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers/misc';
 import * as polygonscan from './api/polygonscan';
+import path from 'path';
 
 const POOLS: Pool[] = [
     {
@@ -62,8 +63,10 @@ const POOLS: Pool[] = [
     // }
 ];
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 9)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
+const SUPER_PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 9)).getTime()/1000);
+
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 6, 8)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
@@ -456,7 +459,7 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startTs
     for (let i = 0; i < userAddresses.length; i++) {
         const trunced = truncateDecimal(payoutArray[i], DECIMALS);
         if (trunced > 0) {
-            s += `${userAddresses[i]},${trunced}\n`;
+            s += `erc20,0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32,${userAddresses[i]},${trunced}\n`;
         }
     }
 
@@ -465,6 +468,25 @@ function writeReport(payoutMatrix: math.Matrix, userAddresses: string[], startTs
     }
 
     return fsAsync.writeFile(`${REPORTS_DIRECTORY}/${startTs}-${endTs}.csv`, s);
+}
+
+function writeCumulativeReport(payoutMatrix: math.Matrix, userAddresses: string[], endTs: number) {
+    assert(payoutMatrix.size().length === 1 && payoutMatrix.size()[0] === userAddresses.length);
+    const payoutArray = payoutMatrix.toArray() as number[];
+
+    let s = '';
+    for (let i = 0; i < userAddresses.length; i++) {
+        const trunced = truncateDecimal(payoutArray[i], DECIMALS);
+        if (trunced > 0) {
+            s += `${userAddresses[i]},${trunced}\n`;
+        }
+    }
+
+    if (!fs.existsSync(REPORTS_DIRECTORY)) {
+        fs.mkdirSync(REPORTS_DIRECTORY);
+    }
+
+    return fsAsync.writeFile(`${REPORTS_DIRECTORY}/cumulative-${endTs}.csv`, s);
 }
 
 async function calculateIncentivesForOneWeek(
@@ -514,9 +536,6 @@ async function calculateIncentivesForOneWeek(
 
         tVecPerPool[pool.address] = math.matrix(tVec);
         newTimeDataStacksPerPool[pool.address] = newStacks;
-
-        // save time multipliers for later runs
-        // await saveTimeMultiplierRecord(pool.address, END_BLOCK, newStacks);
     }
 
     // create diversity multiplier vectors
@@ -556,7 +575,7 @@ function secondsToDateString(d: number) {
         return;
     }
 
-    const periodStartBlock = await polygonscan.getBlockNumberByTimestamp(PERIOD_START_TS);
+    const superPeriodStartBlock = await polygonscan.getBlockNumberByTimestamp(SUPER_PERIOD_START_TS);
     const periodEndBlock = await polygonscan.getBlockNumberByTimestamp(PERIOD_END_TS);
 
     // get all erc20 transfer data
@@ -568,13 +587,13 @@ function secondsToDateString(d: number) {
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
 
     // create mapping between block timestamp and number
-    await createBlockMapping(periodStartBlock, periodEndBlock);
+    await createBlockMapping(superPeriodStartBlock, periodEndBlock);
 
     ////////////////////////////////////////
     
-    let weekStartTs = PERIOD_START_TS;
+    let weekStartTs = SUPER_PERIOD_START_TS;
     let weekEndTs = weekStartTs;
-    
+
     let lastWeekTimeDataStacks: {[key:string]: TimeDataStackMapping} = {};
     let calculatedIncentives = math.zeros([allUserAddresses.length]) as math.Matrix;
 
@@ -597,6 +616,26 @@ function secondsToDateString(d: number) {
 
         lastWeekTimeDataStacks = output.newTimeDataStacksPerPool;
         calculatedIncentives = math.add(calculatedIncentives, output.calculatedIncentives);
+    }
+
+    await writeCumulativeReport(calculatedIncentives, allUserAddresses, PERIOD_END_TS);
+
+    if (PERIOD_START_TS > SUPER_PERIOD_START_TS) {
+        // this is not the first period within superperiod, therefore we must subtract last cumulative calculation
+        const lastCumulativeText = (await fsAsync.readFile(path.join(REPORTS_DIRECTORY, `cumulative-${PERIOD_START_TS}.csv`))).toString();
+        const lastCumulativeMap: {[key: string]: number} = {};
+
+        lastCumulativeText.split('\n').forEach(line => {
+            lastCumulativeMap[line.split(',')[0]] = Number(line.split(',')[1]);
+        });
+
+        const lastCumulativeArray: number[] = [];
+
+        for (let i = 0; i < allUserAddresses.length; i++) {
+            lastCumulativeArray.push(lastCumulativeMap[allUserAddresses[i]] || 0);
+        }
+
+        calculatedIncentives = math.subtract(calculatedIncentives, math.matrix(lastCumulativeArray));
     }
 
     await writeReport(calculatedIncentives, allUserAddresses, PERIOD_START_TS, PERIOD_END_TS);
