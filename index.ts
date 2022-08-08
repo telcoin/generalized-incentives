@@ -14,7 +14,7 @@ import { HistoricalTokenValue, Transfer } from './api/types';
 import * as graph from './api/graph';
 import { testDiversity, testVBalancer } from './helpers/testingHelper';
 
-import * as fsAsync from 'fs/promises';
+import {promises as fsAsync} from 'fs';
 import * as fs from 'fs';
 import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers/misc';
 import * as polygonscan from './api/polygonscan';
@@ -65,8 +65,8 @@ const POOLS: Pool[] = [
 
 const SUPER_PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 9)).getTime()/1000);
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 6, 8)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 6, 8)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 7, 7)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
@@ -210,7 +210,7 @@ function calculateYp(_V: number[], transfers: Transfer[], allUserAddresses: stri
     const groupedTransfers = groupTransfersByAddress(transfers);
 
     let progress = 0;
-    process.stdout.write(`Yp calculation progress: 0/${allUserAddresses.length}`);
+    console.log(`Yp calculation progress: 0/${allUserAddresses.length}`);
     
     allUserAddresses.forEach(address => {
         progress++;
@@ -579,9 +579,9 @@ function secondsToDateString(d: number) {
     const periodEndBlock = await polygonscan.getBlockNumberByTimestamp(PERIOD_END_TS);
 
     // get all erc20 transfer data
-    process.stdout.write('Fetching LP token transfers...');
+    console.log('Fetching LP token transfers...');
     const erc20TransfersByPool = await alchemy.getTransfersOfPools(POOLS.map(p => p.address), 0, -1);
-    process.stdout.write('Done!\n');
+    console.log('Done!\n');
 
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));

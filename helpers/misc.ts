@@ -15,7 +15,7 @@ export function truncateDecimal(d: number, points: number): number {
 export function consoleReplaceLine(s: string) {
     process.stdout.clearLine(0);
     process.stdout.cursorTo(0);
-    process.stdout.write(s);
+    console.log(s);
 }
 
 export function wait(ms: number) {

@@ -54,7 +54,7 @@ export async function getBlocks(start:number, end:number, pageSize:number = 100)
     
     let lastPct = 0;
     
-    process.stdout.write('fetch blocks progress: 0%');
+    console.log('fetch blocks progress: 0%');
 
     for (let a = start; a <= end; a += pageSize) {
         const q = `{
@@ -141,7 +141,7 @@ export async function getSwapsTimestampsBalancer(poolAddress: string, minTimesta
         return data.swaps.map((x:any) => parseInt(x.timestamp));
     }
     
-    process.stdout.write(`fetch swaps for ${shortenedAddress} page: 0/?`)
+    console.log(`fetch swaps for ${shortenedAddress} page: 0/?`)
 
     const result = await getDataPaginatedById<number>(balancerClient, "swaps", createQueryString, processResponse);
     console.log();
@@ -168,7 +168,7 @@ export async function getJoinExitTimestampsBalancer(poolAddress: string, minTime
         return data.joinExits.map((x:any) => parseInt(x.timestamp));
     }
     
-    process.stdout.write(`fetch joins/exits for ${shortenedAddress} page: 0/?`);
+    console.log(`fetch joins/exits for ${shortenedAddress} page: 0/?`);
 
     const result = await getDataPaginatedById<number>(balancerClient, "joinExits", createQueryString, processResponse);
     console.log();
@@ -220,7 +220,7 @@ export async function getHistoricalLpTokenValuesBalancer(poolAddress: string, bl
     }
     const params = blocks.map(block => {return {block: block.toString()}});
 
-    process.stdout.write(`fetch liquidity for ${shortenedAddress} progress: 0%`);
+    console.log(`fetch liquidity for ${shortenedAddress} progress: 0%`);
 
     const result = await batchQueries(balancerClient, params, buildQueryString, processResponse);
     console.log();
