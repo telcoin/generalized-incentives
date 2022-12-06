@@ -4,6 +4,7 @@
 Environment variables or .env:
 ```
 ALCHEMYKEY="..."
+POLYGONSCANKEY="..."
 ```
 
 ```

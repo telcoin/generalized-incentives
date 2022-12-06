@@ -14,6 +14,7 @@ const balancerLptAbi = require(__dirname + '/abi/balancerLpt.json');
 // const vaultContract = new ethers.Contract("0xba12222222228d8ba445958a75a0704d566bf2c8", balancerVaultAbi, provider);
 const vaultContract = new web3.eth.Contract(balancerVaultAbi, "0xba12222222228d8ba445958a75a0704d566bf2c8");
 
+export default vaultContract;
 
 const lptContracts: {[key:string]: Contract} = {};
 
@@ -77,7 +78,7 @@ export async function getLptSupplyAtBlock(address: string, blockNum: number): Pr
     // return (await getLptContract(address).functions.totalSupply({blockTag: blockNum}))[0];
 }
 
-async function getPoolIdFromLptAddress(addr: string): Promise<string> {
+export async function getPoolIdFromLptAddress(addr: string): Promise<string> {
     return (await callContractWithRetries(
         getLptContract(addr),
         "getPoolId",

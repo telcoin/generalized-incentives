@@ -12,6 +12,8 @@ export async function getBlockNumberByTimestamp(ts: number): Promise<number> {
     const res = await fetch(APIURL + `module=block&action=getblocknobytime&timestamp=${ts}&closest=before`);
     const resJson = await res.json();
 
+    console.log(resJson);
+
     tsToNumCache[ts] = Number(resJson.result);
 
     return tsToNumCache[ts];
