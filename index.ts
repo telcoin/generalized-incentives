@@ -3,7 +3,7 @@ dotenv.config();
 
 import { assert } from 'chai';
 
-import { ethers } from 'ethers';
+import { BigNumber, ethers } from 'ethers';
 
 import * as math from 'mathjs';
 
@@ -19,6 +19,8 @@ import * as fs from 'fs';
 import { consoleReplaceLine, decimalToPercent, truncateDecimal } from './helpers/misc';
 import * as polygonscan from './api/polygonscan';
 import path from 'path';
+
+const TEL = "0xdF7837DE1F2Fa4631D716CF2502f8b230F1dcc32".toLowerCase();
 
 const POOLS: Pool[] = [
     {
@@ -68,9 +70,9 @@ const POOLS: Pool[] = [
 ];
 
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 10, 5)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 11, 5)).getTime()/1000);
 const SUPER_PERIOD_START_TS = PERIOD_START_TS;//Math.floor(new Date(Date.UTC(2022, 9, 6)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 11, 5)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2023, 0, 4)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
@@ -87,8 +89,6 @@ const REPORTS_DIRECTORY = './reports';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
-const blockTimestampToNumber: {[key: string]: string} = {};
-const blockNumberToTimestamp: {[key: string]: string} = {};
 
 type Pool = {
     symbol: string,
@@ -123,74 +123,116 @@ const TIMING = {
 
 /////////////////////////////////////////////////////////////
 
-function calculateVFromData(liquidityData: HistoricalTokenValue[], liquidityValueAtStartBlock: number, startBlock: number, endBlock: number): number[] {
-    if (liquidityData.length === 0) {
-        return Array(endBlock - startBlock).fill(liquidityValueAtStartBlock);
-    }
+async function getReserves(poolAddress: string, fromBlock: number, toBlock: number) {
+    assert(toBlock > fromBlock);
+
+    const poolId = await balancerContracts.getPoolIdFromLptAddress(poolAddress);
+
+    // get swaps
+    const swaps = await alchemy.getBalancerSwaps(poolId, fromBlock, toBlock);
+    // get joinexits
+    const joinExits = await alchemy.getBalancerJoinExits(poolId, fromBlock, toBlock);
+
+    const reservesDeltas: {[key: number]: BigNumber} = {}; // block -> delta
     
-    liquidityData.sort((a, b) => {
-        return a.block - b.block;
+    swaps.forEach(swap => {
+        const blockNumber = swap.blockNumber;
+        if (reservesDeltas[blockNumber] === undefined) {
+            reservesDeltas[blockNumber] = BigNumber.from(0);
+        }
+
+        // insert something into deltas
+        if (swap.tokenIn === TEL) {
+            reservesDeltas[blockNumber] = reservesDeltas[blockNumber].add(swap.amountIn);
+        }
+        else if (swap.tokenOut === TEL) {
+            reservesDeltas[blockNumber] = reservesDeltas[blockNumber].sub(swap.amountOut);
+        }
     });
 
-    // make sure it is in ascending block order
-    for (let i = 0; i < liquidityData.length-1; i++) {
-        assert(liquidityData[i].block <= liquidityData[i+1].block);
+    joinExits.forEach(joinExit => {
+        // insert something into deltas
+        const blockNumber = joinExit.blockNumber;
+        if (reservesDeltas[blockNumber] === undefined) {
+            reservesDeltas[blockNumber] = BigNumber.from(0);
+        }
+
+        const telIndex = joinExit.tokens.indexOf(TEL);
+        
+        assert(telIndex >= 0 && telIndex < 2 && typeof telIndex == 'number');
+
+        reservesDeltas[blockNumber] = reservesDeltas[blockNumber].add(joinExit.deltas[telIndex]);
+        reservesDeltas[blockNumber] = reservesDeltas[blockNumber].sub(joinExit.protocolFeeAmounts[telIndex]);
+    
+    });
+
+    // create telReserves vector
+    const telReserves: BigNumber[] = [await balancerContracts.getTelInPoolAtBlock(poolAddress, fromBlock)];
+
+    // start i at 1 because we have the initial liquidity in _V already
+    for (let i = 1; i < toBlock - fromBlock; i++) {
+        telReserves.push(telReserves[telReserves.length - 1]); // duplicate last element
+
+        if (reservesDeltas[fromBlock + i] !== undefined) {
+            telReserves[i] = telReserves[i].add(reservesDeltas[fromBlock + i]);
+        }
     }
 
-    // fill in V - this is the vector of liquidity share value at each block, where the index is (block - START_BLOCK)
-    let _V: number[] = [];
-
-    _V = Array(liquidityData[0].block - startBlock).fill(liquidityValueAtStartBlock);
-
-    for (let i = 0; i < liquidityData.length - 1; i++) {
-        const liq0 = liquidityData[i];
-        const liq1 = liquidityData[i+1];
-        _V = _V.concat(Array(liq1.block - liq0.block).fill(liq0.value));
-    }
-
-    const liqf = liquidityData[liquidityData.length - 1];
-    _V = _V.concat(Array(endBlock - liqf.block).fill(liqf.value));
-
-    assert(_V.length === endBlock - startBlock);
-
-    return _V;
+    return telReserves;
 }
 
-// async function calculateVBalancer2()
+async function getLptSupplies(poolAddress: string, fromBlock: number, toBlock: number) {
+    assert(toBlock > fromBlock);
 
-async function calculateVBalancer(poolAddress: string, startBlock: number, endBlock: number): Promise<number[]> {
-    // to get liquidity data, we first need to get blocks where swaps, adds, or removeds occur
-    // get swaps
-    const swapTimestamps = await graph.getSwapsTimestampsBalancer(
-        poolAddress, 
-        blockNumberToTimestamp[startBlock], 
-        blockNumberToTimestamp[endBlock]
-    );
+    const lptSupplyDeltas: {[key: number]: BigNumber} = {}; // block -> delta
 
-    // new method using events
-    
-    
-    // get joins/exits
-    const joinExitTimestamps = await graph.getJoinExitTimestampsBalancer(
-        poolAddress, 
-        blockNumberToTimestamp[startBlock], 
-        blockNumberToTimestamp[endBlock]
-    );
+    const mints = await alchemy.getTransfers(poolAddress, fromBlock, toBlock, {fromAddress: ZERO_ADDRESS});
+    const burns = await alchemy.getTransfers(poolAddress, fromBlock, toBlock, {toAddress: ZERO_ADDRESS});
 
-    // get blocks of interactions with pool (swap/join/exit)
-    let blocksOfInteraction: number[] = joinExitTimestamps.map(x => parseInt(blockTimestampToNumber[x])).concat(swapTimestamps.map(x => parseInt(blockTimestampToNumber[x])));
+    mints.concat(burns).forEach(mintBurn => {
+        const blockNumber = Number(mintBurn.blockNum);
+        if (lptSupplyDeltas[blockNumber] === undefined) {
+            lptSupplyDeltas[blockNumber] = BigNumber.from(0);
+        }
 
-    // remove potential duplicates
-    blocksOfInteraction = [...new Set(blocksOfInteraction)];
+        if (mintBurn.from == ZERO_ADDRESS) {
+            // mint
+            lptSupplyDeltas[blockNumber] = lptSupplyDeltas[blockNumber].add(mintBurn.rawContract.value);
+        }
+        else {
+            // burn
+            lptSupplyDeltas[blockNumber] = lptSupplyDeltas[blockNumber].sub(mintBurn.rawContract.value);
+        }
+    });
 
-    // get value of 1 LP token at each block where there is a swap, join, or exit
-    const liquidityData = await balancerContracts.getLptValuesAtManyBlocks(poolAddress, blocksOfInteraction);
-    // const liquidityData = await graph.getHistoricalLpTokenValuesBalancer(poolAddress, blocksOfInteraction);
-    assert(liquidityData.length === blocksOfInteraction.length);
+    // create telReserves vector
+    const lptSupplies: BigNumber[] = [await balancerContracts.getLptSupplyAtBlock(poolAddress, fromBlock)];
 
-    const initialLiquidity = await balancerContracts.getLptValueAtBlock(poolAddress, startBlock);
-    // const initialLiquidity = await graph.getLpTokenValueAtBlockBalancer(poolAddress, startBlock);
-    return calculateVFromData(liquidityData, initialLiquidity, startBlock, endBlock);
+    // start i at 1 because we have the initial liquidity in _V already
+    for (let i = 1; i < toBlock - fromBlock; i++) {
+        lptSupplies.push(lptSupplies[lptSupplies.length - 1]); // duplicate last element
+
+        if (lptSupplyDeltas[fromBlock + i] !== undefined) {
+            lptSupplies[i] = lptSupplies[i].add(lptSupplyDeltas[fromBlock + i]);
+        }
+    }
+
+    return lptSupplies;
+}
+
+
+async function calculateVBalancer2(poolAddress: string, fromBlock: number, toBlock: number) {
+    const telReserves = await getReserves(poolAddress, fromBlock, toBlock);
+    const lptSupplies = await getLptSupplies(poolAddress, fromBlock, toBlock);
+
+    assert(telReserves.length == lptSupplies.length);
+
+    const v: number[] = [];
+    for (let i = 0; i < telReserves.length; i++) {
+        v.push(Number(telReserves[i]) / Number(lptSupplies[i]));
+    }
+
+    return v;
 }
 
 function groupTransfersByAddress(transfers: Transfer[]) {
@@ -297,15 +339,6 @@ function getAllUserAddressesFromTransfers(transfers: Transfer[]): string[] {
     return addrs;
 }
 
-async function createBlockMapping(startBlock: number, endBlock: number) {
-    const blocks = await graph.getBlocks(startBlock, endBlock);  
-
-    blocks.forEach(x => {
-        blockTimestampToNumber[x.timestamp] = x.number;
-        blockNumberToTimestamp[x.number] = x.timestamp;
-    });
-
-}
 
 function calculateDiversityMultipliersFromYVecs(yVecPerPool: {[key: string]: math.Matrix}): {[key: string]: math.Matrix} {
     const mVecPerPool: {[key: string]: math.Matrix} = {}; // holds Mp per pool
@@ -523,7 +556,7 @@ async function calculateIncentivesForOneWeek(
 
         // calculate _V
         let _V: number[];
-        _V = await calculateVBalancer(pool.address, startBlock, endBlock);
+        _V = await calculateVBalancer2(pool.address, startBlock, endBlock);
         // await testVBalancer(_V, pool.address, startBlock, endBlock);
 
         const _Yp = calculateYp(_V, erc20TransfersByPool[pool.address], allUserAddresses, startBlock, endBlock);
@@ -595,8 +628,6 @@ function secondsToDateString(d: number) {
     // build master list of users
     const allUserAddresses = getAllUserAddressesFromTransfers(Array.prototype.concat(...Object.values(erc20TransfersByPool)));
 
-    // create mapping between block timestamp and number
-    await createBlockMapping(superPeriodStartBlock, periodEndBlock);
 
     console.log(superPeriodStartBlock, periodEndBlock, PERIOD_END_TS);
 
