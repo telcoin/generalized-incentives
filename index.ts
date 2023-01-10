@@ -53,20 +53,24 @@ const POOLS: Pool[] = [
         symbol: "TEL/GRT",
         address: "0x0a2b8a82fFdf39AcCe59729f6285BAF530a13c53".toLowerCase(),
     },
-    // {
-    //     symbol: "TEL/BAL/USDC",
-    //     address: "0xdB1db6E248d7Bb4175f6E5A382d0A03fe3DCc813".toLowerCase(),
-    // },
-    // {
-    //     symbol: "TEL/BAL",
-    //     address: "0x186084fF790C65088BA694Df11758faE4943EE9E".toLowerCase(),
-    // }
+    {
+        symbol: "TEL/SOL",
+        address: "0xffbb77fb2725b5c227dd2879d813587a30c5359c".toLowerCase(),
+    },
+    {
+        symbol: "TEL/GHST",
+        address: "0x7b90ae8aacf98cb872e5f1cc8e729241c5b8e44d".toLowerCase(),
+    },
+    {
+        symbol: "TEL/SAND",
+        address: "0x6ff633d7eaafe1f6e4c6f0280317b93125aaa7eb".toLowerCase(),
+    },
 ];
 
-const SUPER_PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 4, 9)).getTime()/1000);
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 5, 8)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 6, 8)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 10, 5)).getTime()/1000);
+const SUPER_PERIOD_START_TS = PERIOD_START_TS;//Math.floor(new Date(Date.UTC(2022, 9, 6)).getTime()/1000);
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2022, 11, 5)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
@@ -152,6 +156,8 @@ function calculateVFromData(liquidityData: HistoricalTokenValue[], liquidityValu
     return _V;
 }
 
+// async function calculateVBalancer2()
+
 async function calculateVBalancer(poolAddress: string, startBlock: number, endBlock: number): Promise<number[]> {
     // to get liquidity data, we first need to get blocks where swaps, adds, or removeds occur
     // get swaps
@@ -160,6 +166,9 @@ async function calculateVBalancer(poolAddress: string, startBlock: number, endBl
         blockNumberToTimestamp[startBlock], 
         blockNumberToTimestamp[endBlock]
     );
+
+    // new method using events
+    
     
     // get joins/exits
     const joinExitTimestamps = await graph.getJoinExitTimestampsBalancer(
@@ -588,6 +597,8 @@ function secondsToDateString(d: number) {
 
     // create mapping between block timestamp and number
     await createBlockMapping(superPeriodStartBlock, periodEndBlock);
+
+    console.log(superPeriodStartBlock, periodEndBlock, PERIOD_END_TS);
 
     ////////////////////////////////////////
     

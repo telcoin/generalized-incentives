@@ -6,7 +6,8 @@ const APIURL = "https://polygon-mainnet.g.alchemy.com/v2/" + KEY;
 
 import { Network, Alchemy } from "alchemy-sdk";
 import { AbiCoder } from "ethers/lib/utils";
-
+import {Log} from "alchemy-sdk/node_modules/@ethersproject/abstract-provider/src.ts";
+import { BigNumber, ethers } from "ethers";
 // Optional config object, but defaults to demo api-key and eth-mainnet.
 const settings = {
     apiKey: process.env.ALCHEMYKEY, // Replace with your Alchemy API Key.
@@ -14,8 +15,10 @@ const settings = {
   };
 const alchemy = new Alchemy(settings);
 
+const abiCoder = new AbiCoder();
+
 export async function getEvents(address: string, topics: string[], fromBlock: number, toBlock: number) {
-    let events: any[] = [];
+    let events: Log[] = [];
 
     let from = fromBlock;
     let to = toBlock;
@@ -65,22 +68,49 @@ export async function getEvents(address: string, topics: string[], fromBlock: nu
     }
 }
 
-export function getSwaps(poolId: string, fromBlock: number, toBlock: number) {
+export async function getBalancerSwaps(poolId: string, fromBlock: number, toBlock: number) {
     const topics = [
         '0x2170c741c41531aec20e7c107c24eecfdd15e69c9bb0a8dd37b1840b9e0b207b', // Swap(...) hash
         poolId
     ];
 
-    return getEvents('0xBA12222222228d8Ba445958a75a0704d566BF2C8', topics, fromBlock, toBlock);
+    const events = await getEvents('0xBA12222222228d8Ba445958a75a0704d566BF2C8', topics, fromBlock, toBlock);
+
+    // parse the events
+    return events.map(ev => {
+        const parsedData = abiCoder.decode(['uint256 amountIn', 'uint256 amountOut'], ev.data)
+        return {
+            blockNumber: ev.blockNumber,
+            poolId,
+            tokenIn: ev.topics[2].replace('0x000000000000000000000000', '0x').toLowerCase(),
+            tokenOut: ev.topics[3].replace('0x000000000000000000000000', '0x').toLowerCase(),
+            amountIn: BigNumber.from(parsedData.amountIn),
+            amountOut: BigNumber.from(parsedData.amountOut)
+        };
+    });
 }
 
-export function getJoinExits(poolId: string, fromBlock: number, toBlock: number) {
+export async function getBalancerJoinExits(poolId: string, fromBlock: number, toBlock: number) {
     const topics = [
         '0xe5ce249087ce04f05a957192435400fd97868dba0e6a4b4c049abf8af80dae78', // PoolBalanceChanged(...) hash
         poolId
     ];
 
-    return getEvents('0xBA12222222228d8Ba445958a75a0704d566BF2C8', topics, fromBlock, toBlock);
+    const events = await getEvents('0xBA12222222228d8Ba445958a75a0704d566BF2C8', topics, fromBlock, toBlock);
+
+    // parse the events
+    return events.map(ev => {
+        const parsedData = abiCoder.decode(['address[] tokens', 'int256[] deltas', 'uint256[] protocolFeeAmounts'], ev.data);
+        return {
+            blockNumber: ev.blockNumber,
+            transactionHash: ev.transactionHash,
+            poolId,
+            liquidityProvider: ev.topics[2].replace('0x000000000000000000000000', '0x').toLowerCase(),
+            tokens: parsedData.tokens.map((x: any) => x.toLowerCase()) as string[],
+            deltas: parsedData.deltas as BigNumber[],
+            protocolFeeAmounts: parsedData.protocolFeeAmounts as BigNumber[]
+        };
+    });
 }
 
 export async function getTransfers(erc20Address: string, startblock: number, endBlock: number, additionalOptions: Param = {}): Promise<Transfer[]> {
