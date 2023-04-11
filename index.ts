@@ -67,6 +67,22 @@ const POOLS: Pool[] = [
         symbol: "TEL/SAND",
         address: "0x6ff633d7eaafe1f6e4c6f0280317b93125aaa7eb".toLowerCase(),
     },
+    {
+        symbol: "TEL/SUSHI",
+        address: "0x53C0022e9425454E37A54D067e2116695Ac2af2d".toLowerCase(),
+    },
+    {
+        symbol: "TEL/LDO",
+        address: "0x9742c7c93691c679b4f66814d4c92e1175eec4ec".toLowerCase(),
+    },
+    {
+        symbol: "TEL/PYR",
+        address: "0xc9605650eD21f1CF80B09060B0fF208F90B50558".toLowerCase(),
+    },
+    {
+        symbol: "TEL/OCEAN",
+        address: "0xb5308a1112b93e133fd7ec2d90b0bb3ba022ab84".toLowerCase(),
+    }
 ];
 
 
