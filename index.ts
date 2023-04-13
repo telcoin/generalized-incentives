@@ -86,9 +86,9 @@ const POOLS: Pool[] = [
 ];
 
 
-const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2022, 11, 5)).getTime()/1000);
-const SUPER_PERIOD_START_TS = PERIOD_START_TS;//Math.floor(new Date(Date.UTC(2022, 9, 6)).getTime()/1000);
-const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2023, 0, 4)).getTime()/1000);
+const PERIOD_START_TS = Math.floor(new Date(Date.UTC(2023, 2, 30)).getTime()/1000);
+const SUPER_PERIOD_START_TS = PERIOD_START_TS;
+const PERIOD_END_TS = Math.floor(new Date(Date.UTC(2023, 3, 9)).getTime()/1000);
 
 const SECONDS_PER_WEEK = 604800;
 
